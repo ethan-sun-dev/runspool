@@ -7,7 +7,7 @@ agree. Display helpers convert to local time only at the presentation layer.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 _FMT = "%Y-%m-%d %H:%M:%S"
 
@@ -15,6 +15,11 @@ _FMT = "%Y-%m-%d %H:%M:%S"
 def utcnow_text() -> str:
     """Return the current UTC time as ``YYYY-MM-DD HH:MM:SS`` text."""
     return datetime.now(UTC).strftime(_FMT)
+
+
+def utcnow_plus_text(seconds: int) -> str:
+    """Return the UTC time ``seconds`` from now as ``YYYY-MM-DD HH:MM:SS`` text."""
+    return (datetime.now(UTC) + timedelta(seconds=max(seconds, 0))).strftime(_FMT)
 
 
 def to_local_text(ts: str | None) -> str:

@@ -1,0 +1,30 @@
+# Real-world example: turn client/competitor/customer sources into a briefing
+# package. Mixes custom plugin steps with the built-in `archive` step.
+# Fully offline — sample Markdown data, no network or API keys.
+workspace_root: ./workspace
+
+# These steps are deterministic, so a failure means a missing/bad input rather
+# than a transient glitch. Skip retries and surface it as manual_required right
+# away, so `runspool inspect` tells you (or an agent) exactly what to fix.
+scheduler:
+  max_retries: 0
+
+# Load the custom steps that live next to this config.
+plugin_paths: [steps]
+
+steps:
+  collect_sources:        { import: "intel_steps:CollectSourcesStep" }
+  extract_signals:        { import: "intel_steps:ExtractSignalsStep" }
+  map_competitors:        { import: "intel_steps:MapCompetitorsStep" }
+  identify_opportunities: { import: "intel_steps:IdentifyOpportunitiesStep" }
+  write_brief:            { import: "intel_steps:WriteBriefStep" }
+
+workflows:
+  client_intel:
+    steps:
+      - collect_sources
+      - extract_signals
+      - map_competitors
+      - identify_opportunities
+      - write_brief
+      - archive          # built-in

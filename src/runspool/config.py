@@ -18,7 +18,9 @@ from runspool.models import WorkflowDef
 class SchedulerConfig(BaseModel):
     poll_interval_seconds: int = Field(default=5, gt=0)
     max_retries: int = Field(default=3, ge=0)
-    retry_delay_seconds: int = Field(default=60, ge=0)
+    # 0 = retry immediately on the next tick. A positive value delays the retry
+    # by that many seconds (backoff); timed retries are then driven by the daemon.
+    retry_delay_seconds: int = Field(default=0, ge=0)
 
 
 class WorkerPoolConfig(BaseModel):

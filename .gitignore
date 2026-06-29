@@ -21,8 +21,12 @@ workspace/
 *.db
 *.db-journal
 *.db-wal
-config.yaml
 .env
+
+# Ignore a config.yaml created at the repo root by `runspool init`, but keep the
+# committed example configs under examples/ (note the leading slash anchors this
+# to the repo root only).
+/config.yaml
 
 # Examples create their own local state
 examples/**/workspace/

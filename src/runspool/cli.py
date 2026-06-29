@@ -107,7 +107,9 @@ def run(
 ) -> None:
     """Advance every runnable task once, until no further progress is made."""
     ctx = _ctx()
-    notifier = None if json_output else (lambda m: typer.echo(m))
+    # In JSON mode, keep stdout a single clean JSON document by silencing the
+    # per-step notifier entirely (default would otherwise print to stderr).
+    notifier = (lambda m: None) if json_output else (lambda m: typer.echo(m))
     rounds = run_until_idle(ctx, notifier=notifier)
     if json_output:
         _emit_json({"rounds": rounds, "tasks": list_view(ctx.repo.list_all())})

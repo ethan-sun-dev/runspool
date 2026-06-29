@@ -48,7 +48,7 @@ workspace_root: {workspace_root}
 scheduler:
   poll_interval_seconds: 5   # how often the daemon looks for work
   max_retries: 3             # default retry budget per task
-  retry_delay_seconds: 60
+  retry_delay_seconds: 0     # 0 = retry immediately; >0 = backoff (driven by the daemon)
 
 worker_pool:
   size: 4                    # concurrent step executions

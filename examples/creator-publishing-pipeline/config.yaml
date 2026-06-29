@@ -1,0 +1,23 @@
+# Advanced example: a creator/content pipeline that produces a multi-platform
+# DRAFT package and a publish checklist. It never publishes anything.
+# Fully offline — sample materials, no network or API keys.
+workspace_root: ./workspace
+
+plugin_paths: [steps]
+
+steps:
+  collect_materials:       { import: "creator_steps:CollectMaterialsStep" }
+  extract_highlights:      { import: "creator_steps:ExtractHighlightsStep" }
+  draft_article:           { import: "creator_steps:DraftArticleStep" }
+  render_platform_package: { import: "creator_steps:RenderPlatformPackageStep" }
+  create_publish_checklist: { import: "creator_steps:CreatePublishChecklistStep" }
+
+workflows:
+  creator_publishing:
+    steps:
+      - collect_materials
+      - extract_highlights
+      - draft_article
+      - render_platform_package
+      - create_publish_checklist
+      - archive          # built-in

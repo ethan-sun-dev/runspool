@@ -103,7 +103,11 @@ class TaskRunner:
             dur = int((time.monotonic() - t0) * 1000)
             message = f"{type(exc).__name__}: {exc}"
             self.step_runs.finish(run_id, status="failed", duration_ms=dur, error=message)
-            sm.fail(task_id, message)
+            sm.fail(
+                task_id,
+                message,
+                retry_delay_seconds=self.config.scheduler.retry_delay_seconds,
+            )
             # fail() may go to failed (will retry) or manual_required; report
             # based on the freshly persisted status.
             fresh = self.repo.get_task(task_id)

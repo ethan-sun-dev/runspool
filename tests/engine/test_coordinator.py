@@ -15,6 +15,13 @@ class _Ok(Step):
         return StepResult(message="ok")
 
 
+class _Boom(Step):
+    name = "alpha"
+
+    def run(self, ctx: StepContext) -> StepResult:
+        raise RuntimeError("boom")
+
+
 class _Skip(Step):
     name = "alpha"
 
@@ -62,6 +69,24 @@ def test_when_false_skips_step(tmp_path):
 def test_tick_returns_zero_when_idle(tmp_path):
     ctx, coord, pool = _coordinator(tmp_path, _Ok())
     assert coord.tick() == 0
+    pool.shutdown()
+
+
+def test_auto_retry_consumes_budget_to_manual_required(tmp_path):
+    # With retry_delay_seconds defaulting to 0, repeated ticks should requeue the
+    # FAILED task and consume max_retries until it lands in manual_required.
+    ctx, coord, pool = _coordinator(tmp_path, _Boom())
+    tid = ctx.repo.create_task(
+        input="x", workflow="local_file", first_step="alpha", max_retries=2
+    )
+    for _ in range(20):
+        submitted = coord.tick()
+        pool.drain()
+        if submitted == 0:
+            break
+    task = ctx.repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert task["retry_count"] == 3  # initial attempt + 2 retries
     pool.shutdown()
 
 

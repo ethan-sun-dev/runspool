@@ -1,0 +1,7 @@
+# Quickstart example: process local text files with built-in steps only.
+# No network, API keys, or external tools required.
+workspace_root: ./workspace
+
+workflows:
+  local_file:
+    steps: [ingest_file, classify_text, normalize_markdown, summarize_text, archive]

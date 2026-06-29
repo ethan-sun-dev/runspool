@@ -69,11 +69,12 @@ def test_full_pipeline_end_to_end(ctx, tmp_path):
     }
 
 
-def test_missing_input_goes_manual_required(ctx):
-    # max_retries default is 3; force it to 0 so one failure is terminal-ish fast.
+def test_missing_input_auto_retries_to_manual_required(ctx):
+    # Default budget is 3 retries with retry_delay 0; run_until_idle should
+    # automatically consume all retries and land in manual_required.
     tid = add_task(ctx, "/no/such/file.txt", workflow="local_file")
-    ctx.repo.update_fields(tid, {"max_retries": 0})
     run_until_idle(ctx, notifier=lambda m: None)
     task = ctx.repo.get_task(tid)
     assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert task["retry_count"] == 4  # initial attempt + 3 retries
     assert "not found" in task["last_error"]

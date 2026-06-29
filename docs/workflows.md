@@ -57,6 +57,11 @@ steps:
 - **scheduler.max_retries** — the retry budget stamped onto each new task. Set it
   to `0` to make the first failure terminal (it becomes `manual_required`
   immediately) — useful when failures mean "bad input", not "transient glitch".
+- **scheduler.retry_delay_seconds** — delay before a failed task is retried.
+  `0` (default) retries on the next tick, so one `runspool run` consumes the
+  whole budget; a positive value is a backoff whose timed retries are driven by
+  the `daemon`. Retries are automatic either way (see
+  [concepts.md](concepts.md#retries)).
 - **worker_pool.size** — the number of worker threads.
 - **concurrency** — caps how many tasks may run a given step at once. Keep it at
   `1` for steps that must not overlap; raise it for cheap, parallel-safe steps.

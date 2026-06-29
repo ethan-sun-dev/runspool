@@ -16,7 +16,7 @@ manual_required once retries are exhausted)::
 
 from __future__ import annotations
 
-from runspool.clock import utcnow_text
+from runspool.clock import utcnow_plus_text, utcnow_text
 from runspool.models import EventType, TaskStatus, WorkflowDef
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
@@ -124,7 +124,7 @@ class StateMachine:
             message=f"skipped, advanced to {nxt.step}",
         )
 
-    def fail(self, task_id: int, error: str) -> None:
+    def fail(self, task_id: int, error: str, *, retry_delay_seconds: int = 0) -> None:
         task = self.repo.get_task(task_id)
         if task is None:
             return
@@ -136,6 +136,7 @@ class StateMachine:
                     "task_status": TaskStatus.MANUAL_REQUIRED,
                     "retry_count": retry_count,
                     "last_error": error,
+                    "next_retry_at": None,
                     "locked_by": None,
                     "locked_at": None,
                     "heartbeat_at": None,
@@ -143,18 +144,37 @@ class StateMachine:
             )
             self.log.add(task_id, EventType.MANUAL_REQUIRED, step=task["step"], message=error)
             return
+        # Schedule an automatic retry. The task stays FAILED (observable) until
+        # next_retry_at passes, at which point the coordinator requeues it.
         self.repo.update_fields(
             task_id,
             {
                 "task_status": TaskStatus.FAILED,
                 "retry_count": retry_count,
                 "last_error": error,
+                "next_retry_at": utcnow_plus_text(retry_delay_seconds),
                 "locked_by": None,
                 "locked_at": None,
                 "heartbeat_at": None,
             },
         )
         self.log.add(task_id, EventType.STEP_FAILED, step=task["step"], message=error)
+
+    def requeue_failed(self, task_id: int) -> None:
+        """Move a FAILED task back to QUEUED for its scheduled automatic retry.
+
+        Guarded so a task that changed state between selection and requeue (e.g.
+        a manual retry or terminate) is not disturbed.
+        """
+        task = self.repo.get_task(task_id)
+        if task is None or task["task_status"] != TaskStatus.FAILED:
+            return
+        self.repo.update_fields(
+            task_id, {"task_status": TaskStatus.QUEUED, "next_retry_at": None}
+        )
+        self.log.add(
+            task_id, EventType.RETRY, step=task["step"], message="automatic retry"
+        )
 
     def request_pause(self, task_id: int) -> None:
         task = self.repo.get_task(task_id)

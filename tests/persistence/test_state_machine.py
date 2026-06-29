@@ -49,6 +49,35 @@ def test_fail_retries_then_manual_required(tmp_path):
     assert repo.get_task(tid)["task_status"] == TaskStatus.MANUAL_REQUIRED
 
 
+def test_fail_schedules_retry_and_requeue_failed(tmp_path):
+    repo, sm, tid = _setup(tmp_path, max_retries=2)
+    sm.claim(tid, worker="w1")
+    sm.fail(tid, "boom")
+    task = repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.FAILED
+    assert task["next_retry_at"] is not None        # auto-retry scheduled
+    sm.requeue_failed(tid)
+    task = repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.QUEUED
+    assert task["next_retry_at"] is None
+
+
+def test_requeue_failed_ignores_non_failed(tmp_path):
+    repo, sm, tid = _setup(tmp_path)
+    sm.claim(tid, worker="w1")                       # task is RUNNING, not FAILED
+    sm.requeue_failed(tid)
+    assert repo.get_task(tid)["task_status"] == TaskStatus.RUNNING
+
+
+def test_manual_required_clears_next_retry_at(tmp_path):
+    repo, sm, tid = _setup(tmp_path, max_retries=0)
+    sm.claim(tid, worker="w1")
+    sm.fail(tid, "boom")
+    task = repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert task["next_retry_at"] is None
+
+
 def test_pause_resume_cycle(tmp_path):
     repo, sm, tid = _setup(tmp_path)
     sm.claim(tid, worker="w1")

@@ -92,6 +92,26 @@ The filesystem is the artifact store: each task gets
 `workspace_root/tasks/<id>/`, and `archive` moves a finished task to
 `workspace_root/ready/<id>/`.
 
+## Retries
+
+When a step raises, the state machine records the error and increments
+`retry_count`. While `retry_count <= max_retries`, the task becomes `failed` with
+a scheduled retry time (`now + retry_delay_seconds`); once retries are exhausted
+it becomes `manual_required`. On each tick the coordinator requeues `failed`
+tasks whose retry time has arrived, so retries happen **automatically** — both
+under `runspool run` and the `daemon`.
+
+- `retry_delay_seconds: 0` (the default) retries on the next tick, so a single
+  `runspool run` consumes the whole retry budget and ends at `completed` or
+  `manual_required`.
+- A positive `retry_delay_seconds` delays each retry (backoff); those timed
+  retries are driven by the long-running `daemon`.
+- `max_retries: 0` makes the first failure terminal — it goes straight to
+  `manual_required`. Use it when a failure means "bad input", not "transient".
+
+A step can also raise `StepDeferred` to retry **without** consuming the budget —
+use that for waiting on a precondition rather than for errors.
+
 ## Heartbeats and recovery
 
 A running step periodically calls `ctx.heartbeat()` (the runner throttles writes

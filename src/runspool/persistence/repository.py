@@ -72,6 +72,17 @@ class TaskRepository:
             rows = conn.execute("select * from tasks order by id asc").fetchall()
             return [_row_to_dict(r) for r in rows]
 
+    def list_due_failed(self) -> list[dict[str, Any]]:
+        """FAILED tasks whose scheduled retry time has arrived (or is unset)."""
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "select * from tasks where task_status = ? "
+                "and (next_retry_at is null or next_retry_at <= datetime('now')) "
+                "order by priority desc, updated_at asc, id asc",
+                (TaskStatus.FAILED,),
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows]
+
     def list_stale_running(self, timeout_seconds: int) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
             rows = conn.execute(
