@@ -4,6 +4,7 @@ resulting state transition."""
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -38,6 +39,7 @@ class TaskRunner:
         *,
         monotonic: Any = time.monotonic,
         notifier: Callable[[str], None] = _default_notifier,
+        heartbeat_interval: float | None = None,
     ) -> None:
         self.repo = repo
         self.log = log
@@ -46,6 +48,12 @@ class TaskRunner:
         self.config = config
         self._monotonic = monotonic
         self._notifier = notifier
+        # Refresh the heartbeat on a timer while a step runs, independent of
+        # whether the step cooperatively calls ctx.heartbeat(). Default to a
+        # third of the reclaim timeout so a healthy long step is never reclaimed.
+        if heartbeat_interval is None:
+            heartbeat_interval = config.worker_pool.heartbeat_timeout_seconds / 3.0
+        self._heartbeat_interval = heartbeat_interval
 
     def _notify(self, task: dict[str, Any], reason: str) -> None:
         # Prefer the task name; fall back to the raw input so the console can tell
@@ -91,7 +99,19 @@ class TaskRunner:
         # sm.fail, so a step_run never hangs in "running" and a task never gets
         # stuck in "running".
         try:
-            result = step.run(ctx)
+            # The background heartbeat is stopped (in the inner finally) before
+            # any state transition runs, so it can never re-set heartbeat_at
+            # after a transition clears it to None.
+            stop_beat = threading.Event()
+            beat = threading.Thread(
+                target=self._beat_loop, args=(task_id, stop_beat), daemon=True
+            )
+            beat.start()
+            try:
+                result = step.run(ctx)
+            finally:
+                stop_beat.set()
+                beat.join()
             if result.updates:
                 self.repo.update_fields(task_id, result.updates)
         except StepDeferred:
@@ -140,6 +160,15 @@ class TaskRunner:
             else:
                 nxt = done["step"] if done else "?"
                 self._notify(done or fresh, f"step {task['step']} done, advancing to {nxt}{tail}")
+
+    def _beat_loop(self, task_id: int, stop: threading.Event) -> None:
+        # Periodically refresh heartbeat_at until signalled to stop. Best-effort:
+        # a transient DB error must not crash the worker thread.
+        while not stop.wait(self._heartbeat_interval):
+            try:
+                self.repo.update_fields(task_id, {"heartbeat_at": utcnow_text()})
+            except Exception:  # noqa: BLE001 - heartbeat is best-effort
+                pass
 
     def _stop_requested(self, task_id: int) -> bool:
         # should_stop signals termination only. Pause is applied at step
