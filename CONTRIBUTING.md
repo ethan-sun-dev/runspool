@@ -17,18 +17,20 @@ See the [non-goals](README.md#non-goals) before suggesting large features.
 
 ## Development setup
 
+This project uses [uv](https://docs.astral.sh/uv/) for environment and
+dependency management.
+
 ```bash
 git clone https://github.com/ethan-sun-dev/runspool
 cd runspool
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync --extra dev   # creates .venv and installs the project + dev tools
 ```
 
 ## Run the checks
 
 ```bash
-ruff check .        # lint
-pytest              # tests
+uv run ruff check .        # lint
+uv run pytest              # tests
 ```
 
 Both must pass before you open a pull request. To try the CLI end-to-end, run

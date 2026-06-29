@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Smoke-test all three examples end-to-end exactly as their READMEs describe.
 # Fails (non-zero exit) if any example does not reach a completed task. Used by
-# CI and runnable locally: `bash scripts/smoke_examples.sh`.
+# CI and runnable locally: `uv run bash scripts/smoke_examples.sh` (so the
+# `runspool` and `python3` it calls resolve from the project environment).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
