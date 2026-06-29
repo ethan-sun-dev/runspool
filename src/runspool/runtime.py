@@ -33,7 +33,12 @@ def build_daemon(ctx: AppContext) -> Daemon:
 
 def _recover(ctx: AppContext) -> None:
     any_workflow = next(iter(ctx.config.workflows))
-    sm = StateMachine(ctx.repo, ctx.log, workflow=ctx.config.workflow(any_workflow))
+    sm = StateMachine(
+        ctx.repo,
+        ctx.log,
+        workflow=ctx.config.workflow(any_workflow),
+        step_runs=ctx.step_runs,
+    )
     sm.recover_interrupted()
 
 

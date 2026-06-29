@@ -41,6 +41,7 @@ class Daemon:
             self.coordinator.repo,
             self.coordinator.log,
             workflow=self.config.workflow(any_workflow),
+            step_runs=self.coordinator.runner.step_runs,
         )
         sm.recover_interrupted()
 

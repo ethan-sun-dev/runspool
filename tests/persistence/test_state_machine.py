@@ -5,6 +5,7 @@ from runspool.persistence.connection import Database
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
 from runspool.persistence.state_machine import IllegalTransition, StateMachine
+from runspool.persistence.step_run_log import StepRunLog
 
 
 def _setup(tmp_path, steps=("a", "b"), max_retries=1):
@@ -174,3 +175,42 @@ def test_recover_interrupted_requeues_running(tmp_path):
     sm.claim(tid, worker="w1")
     sm.recover_interrupted()
     assert repo.get_task(tid)["task_status"] == TaskStatus.QUEUED
+
+
+def _setup_with_runs(tmp_path, steps=("a", "b")):
+    db = Database(tmp_path / "t.db")
+    db.init()
+    repo = TaskRepository(db)
+    log = EventLog(db)
+    runs = StepRunLog(db)
+    sm = StateMachine(repo, log, workflow=WorkflowDef("w", list(steps)), step_runs=runs)
+    tid = repo.create_task(input="x", workflow="w", first_step=steps[0], max_retries=0)
+    return repo, sm, runs, tid
+
+
+def test_requeue_stale_closes_running_step_run(tmp_path):
+    # Reclaiming a stale task must close its in-progress step_run row, not leave
+    # an orphaned "running" row behind (which would show a phantom running step).
+    repo, sm, runs, tid = _setup_with_runs(tmp_path)
+    sm.claim(tid, worker="w1")
+    run_id = runs.start(tid, "a")
+
+    sm.requeue_stale(tid)
+
+    assert repo.get_task(tid)["task_status"] == TaskStatus.QUEUED
+    row = next(r for r in runs.list_for_task(tid) if r["id"] == run_id)
+    assert row["status"] != "running"
+    assert row["finished_at"] is not None
+
+
+def test_recover_interrupted_closes_running_step_run(tmp_path):
+    repo, sm, runs, tid = _setup_with_runs(tmp_path)
+    sm.claim(tid, worker="w1")
+    run_id = runs.start(tid, "a")
+
+    sm.recover_interrupted()
+
+    assert repo.get_task(tid)["task_status"] == TaskStatus.QUEUED
+    row = next(r for r in runs.list_for_task(tid) if r["id"] == run_id)
+    assert row["status"] != "running"
+    assert row["finished_at"] is not None

@@ -20,6 +20,7 @@ from runspool.clock import utcnow_plus_text, utcnow_text
 from runspool.models import TERMINAL_STATUSES, EventType, TaskStatus, WorkflowDef
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
+from runspool.persistence.step_run_log import StepRunLog
 
 
 class IllegalTransition(Exception):
@@ -39,10 +40,24 @@ class IllegalTransition(Exception):
 
 
 class StateMachine:
-    def __init__(self, repo: TaskRepository, log: EventLog, *, workflow: WorkflowDef) -> None:
+    def __init__(
+        self,
+        repo: TaskRepository,
+        log: EventLog,
+        *,
+        workflow: WorkflowDef,
+        step_runs: StepRunLog | None = None,
+    ) -> None:
         self.repo = repo
         self.log = log
         self.workflow = workflow
+        # Optional: when present, recovery/reclaim closes the interrupted step's
+        # still-"running" step_run row so it does not hang forever.
+        self.step_runs = step_runs
+
+    def _close_running_step_run(self, task_id: int) -> None:
+        if self.step_runs is not None:
+            self.step_runs.close_running_for_task(task_id)
 
     def _task_or_missing(self, task_id: int) -> dict:
         task = self.repo.get_task(task_id)
@@ -329,6 +344,7 @@ class StateMachine:
 
     def recover_interrupted(self) -> None:
         for task in self.repo.list_by_status(TaskStatus.RUNNING):
+            self._close_running_step_run(task["id"])
             self.repo.update_fields(
                 task["id"],
                 {
@@ -339,6 +355,7 @@ class StateMachine:
                 },
             )
         for task in self.repo.list_by_status(TaskStatus.PAUSE_PENDING):
+            self._close_running_step_run(task["id"])
             self.repo.update_fields(
                 task["id"], {"task_status": TaskStatus.PAUSED, "pause_requested": 0}
             )
@@ -349,6 +366,7 @@ class StateMachine:
         task = self.repo.get_task(task_id)
         if task is None or task["task_status"] != TaskStatus.RUNNING:
             return
+        self._close_running_step_run(task_id)
         self.repo.update_fields(
             task_id,
             {
