@@ -16,15 +16,16 @@ A clear and concise description of what the bug is.
 Steps to reproduce the behavior:
 
 1. Initialize a workspace
-2. Add one or more steps
-3. Run the workflow
+2. Queue a task
+3. Advance the workflow
 4. Observe the error
 
 ```bash
 runspool init
-runspool add build --cmd "make"
-runspool add test --cmd "pytest" --after build
+echo "sample input" > sample.txt
+runspool add ./sample.txt
 runspool run
+runspool inspect 1 --json
 ```
 
 ## Expected behavior

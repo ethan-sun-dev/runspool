@@ -29,6 +29,21 @@ class StepRunLog:
                 (status, duration_ms, error, run_id),
             )
 
+    def close_running_for_task(self, task_id: int, *, status: str = "interrupted") -> int:
+        """Close any still-"running" step_run rows for a task.
+
+        Used on recovery/reclaim: the worker that owned the row is gone, so the
+        row would otherwise hang in "running" forever and a re-execution would
+        insert a second row. Returns the number of rows closed.
+        """
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                "update step_runs set status = ?, finished_at = datetime('now') "
+                "where task_id = ? and status = 'running'",
+                (status, task_id),
+            )
+            return cur.rowcount
+
     def list_for_task(self, task_id: int) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
             rows = conn.execute(

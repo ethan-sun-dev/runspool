@@ -31,6 +31,12 @@ class Database:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         conn.execute("pragma foreign_keys = on")
+        # WAL lets readers and a single writer proceed concurrently; busy_timeout
+        # makes a blocked writer wait for the lock instead of failing immediately
+        # with "database is locked". Both matter once the daemon's worker pool and
+        # the CLI write to the same database from multiple threads/processes.
+        conn.execute("pragma journal_mode = wal")
+        conn.execute("pragma busy_timeout = 5000")
         try:
             yield conn
             conn.commit()

@@ -105,9 +105,16 @@ def add(
 @app.command()
 def run(
     json_output: bool = typer.Option(False, "--json", help="Emit a JSON summary."),
+    force: bool = typer.Option(False, "--force", help="Run even if a daemon is active."),
 ) -> None:
     """Advance every runnable task once, until no further progress is made."""
     ctx = _ctx()
+    # Refuse to run alongside a live daemon: run recovers all RUNNING tasks back
+    # to queued, which would yank the daemon's in-flight tasks and execute the
+    # same step twice. --force overrides for the rare deliberate case.
+    if not force and daemon_status(ctx)["running"]:
+        typer.echo("daemon is running; refusing to run (use --force to override)")
+        raise typer.Exit(1)
     # In JSON mode, keep stdout a single clean JSON document by silencing the
     # per-step notifier entirely (default would otherwise print to stderr).
     notifier = (lambda m: None) if json_output else (lambda m: typer.echo(m))

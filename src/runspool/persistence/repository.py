@@ -102,6 +102,23 @@ class TaskRepository:
             ).fetchone()
             return _row_to_dict(row)
 
+    def claim_queued(self, task_id: int, *, worker: str, now: str) -> bool:
+        """Atomically claim a task only if it is still QUEUED.
+
+        The conditional UPDATE + rowcount check makes claiming safe even when a
+        separate process (e.g. the daemon and a CLI) races for the same task:
+        exactly one UPDATE matches the ``task_status='queued'`` predicate.
+        Returns True if this caller won the claim.
+        """
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                "update tasks set task_status = ?, locked_by = ?, locked_at = ?, "
+                "heartbeat_at = ?, updated_at = datetime('now') "
+                "where id = ? and task_status = ?",
+                (TaskStatus.RUNNING, worker, now, now, task_id, TaskStatus.QUEUED),
+            )
+            return cur.rowcount == 1
+
     def update_fields(self, task_id: int, fields: dict[str, Any]) -> None:
         # Empty fields is a no-op; a missing task_id affects 0 rows by standard
         # SQL semantics (no error). Existence checks belong to the StateMachine;

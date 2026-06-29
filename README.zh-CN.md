@@ -97,6 +97,8 @@ runspool init                     # 创建配置 + 数据库
 runspool add <input> -w <wf>      # 入队一个任务（默认工作流：local_file）
 runspool run                      # 一次性推进所有可运行任务（适合演示/批处理）
 runspool daemon                   # 常驻循环（长任务自动化）
+runspool daemon-status            # 查看 daemon 是否在运行
+runspool daemon-stop              # 通知运行中的 daemon 停止
 runspool status [<id>]            # 列出任务，或查看单个任务详情
 runspool inspect <id>             # 面向 agent 的快照 + 建议的下一步动作
 runspool logs <id>                # 任务事件历史
@@ -107,8 +109,8 @@ runspool workflows                # 列出工作流及其步骤
 runspool doctor                   # 检查本机环境
 ```
 
-所有读取类命令都支持 `--json`：`status`、`inspect`、`logs`、`overview`、
-`workflows`、`doctor`、`run`。
+以下命令都支持 `--json`：只读类的 `status`、`inspect`、`logs`、`overview`、
+`workflows`、`doctor`，以及会推进状态的 `run`。
 
 ## 为 AI agent 和脚本而设计
 

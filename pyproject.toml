@@ -9,7 +9,7 @@ description = "A local-first CLI workflow engine for reliable personal automatio
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Runspool contributors" }]
+authors = [{ name = "Ethan Sun", email = "ethan@ethansun.dev" }]
 keywords = [
     "workflow",
     "automation",

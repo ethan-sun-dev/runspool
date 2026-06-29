@@ -1,5 +1,7 @@
 """TaskRunner tests with fake steps over a real DB and state machine."""
 
+import time
+
 from runspool.app import load_context
 from runspool.engine.registry import StepRegistry
 from runspool.engine.runner import TaskRunner
@@ -123,6 +125,42 @@ def test_bad_updates_fail_task(tmp_path):
     run = runs.list_for_task(tid)[0]
     assert run["status"] == "failed"
     assert run["finished_at"] is not None
+
+
+def test_runner_heartbeats_during_step_without_step_cooperation(tmp_path):
+    # A step that never calls ctx.heartbeat() must still have its heartbeat_at
+    # refreshed by the runner, so a long step is not reclaimed as stale and
+    # executed a second time.
+    cfg = write_config(tmp_path, steps=("alpha", "beta"))
+    ctx = load_context(cfg)
+    observed: dict[str, bool] = {}
+
+    captured = {}
+
+    class _Slow(Step):
+        name = "alpha"
+
+        def run(self, c: StepContext) -> StepResult:
+            tid = captured["tid"]
+            start = ctx.repo.get_task(tid)["heartbeat_at"]
+            for _ in range(300):
+                if ctx.repo.get_task(tid)["heartbeat_at"] != start:
+                    observed["beat"] = True
+                    break
+                time.sleep(0.01)
+            return StepResult(message="ok")
+
+    reg = StepRegistry()
+    reg.register(_Slow())
+    runner = TaskRunner(
+        ctx.repo, ctx.log, ctx.step_runs, reg, ctx.config,
+        notifier=lambda m: None, heartbeat_interval=0.02,
+    )
+    tid = ctx.repo.create_task(input="x", workflow="local_file", first_step="alpha", max_retries=0)
+    captured["tid"] = tid
+    ctx.repo.update_fields(tid, {"heartbeat_at": "2000-01-01 00:00:00"})
+    runner.execute(tid)
+    assert observed.get("beat") is True
 
 
 def test_failure_notifies_console(tmp_path):

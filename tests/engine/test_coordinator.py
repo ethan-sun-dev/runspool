@@ -90,6 +90,26 @@ def test_auto_retry_consumes_budget_to_manual_required(tmp_path):
     pool.shutdown()
 
 
+def test_pause_pending_counts_toward_quota(tmp_path):
+    # A PAUSE_PENDING task is still being executed by a worker thread, so its
+    # per-step quota slot is occupied. With quota 1 the coordinator must not
+    # claim a second QUEUED task of the same step.
+    ctx, coord, pool = _coordinator(tmp_path, _Ok())
+    busy = ctx.repo.create_task(
+        input="busy", workflow="local_file", first_step="alpha", max_retries=0
+    )
+    ctx.repo.update_fields(busy, {"task_status": TaskStatus.PAUSE_PENDING})
+    queued = ctx.repo.create_task(
+        input="q", workflow="local_file", first_step="alpha", max_retries=0
+    )
+
+    submitted = coord.tick()
+    pool.drain()
+    assert submitted == 0
+    assert ctx.repo.get_task(queued)["task_status"] == TaskStatus.QUEUED
+    pool.shutdown()
+
+
 def test_unregistered_step_does_not_crash_tick(tmp_path):
     ctx, coord, pool = _coordinator(tmp_path, _Ok())
     # first_step that the registry does not know about
