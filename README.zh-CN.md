@@ -33,8 +33,29 @@ Runspool 给这类自动化一根「主心骨」：
 
 ## 安装
 
+推荐用 `pipx` 安装 CLI：
+
 ```bash
-pip install runspool
+pipx install runspool
+```
+
+如果 Mac 上还没有 `pipx`：
+
+```bash
+brew install pipx
+pipx ensurepath
+```
+
+然后重开终端并检查命令：
+
+```bash
+runspool --help
+```
+
+也可以用 pip 安装：
+
+```bash
+python -m pip install runspool
 ```
 
 或从源码安装：

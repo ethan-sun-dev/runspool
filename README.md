@@ -37,8 +37,29 @@ workflows you can trust.
 
 ## Install
 
+Recommended for CLI use:
+
 ```bash
-pip install runspool
+pipx install runspool
+```
+
+If `pipx` is not installed on macOS:
+
+```bash
+brew install pipx
+pipx ensurepath
+```
+
+Then restart your terminal and check the command:
+
+```bash
+runspool --help
+```
+
+Alternatively, install with pip:
+
+```bash
+python -m pip install runspool
 ```
 
 Or from source:
