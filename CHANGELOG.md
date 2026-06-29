@@ -28,6 +28,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - Unified maintainer identity to `Ethan Sun <ethan@ethansun.dev>` across the
   license, package metadata, and Code of Conduct contact.
+- Standardized the project tooling on [uv](https://docs.astral.sh/uv/):
+  install/development docs, CONTRIBUTING, the CI and publish workflows, and the
+  example smoke test now use `uv` (`uv tool install`, `uv sync`, `uv run`,
+  `uv build`). pip remains a supported end-user install path.
 
 ## [0.1.0] - 2026-06-29
 

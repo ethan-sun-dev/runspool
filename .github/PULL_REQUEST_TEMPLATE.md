@@ -16,8 +16,8 @@ Closes #(issue number), or link to the relevant issue / discussion.
 
 ## Checklist
 
-- [ ] `ruff check .` passes
-- [ ] `pytest` passes
+- [ ] `uv run ruff check .` passes
+- [ ] `uv run pytest` passes
 - [ ] Added or updated tests for the change
 - [ ] Updated documentation if needed
 - [ ] Follows the existing code style and keeps the engine local-first

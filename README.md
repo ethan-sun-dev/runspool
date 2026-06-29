@@ -37,20 +37,19 @@ workflows you can trust.
 
 ## Install
 
-Recommended for CLI use:
+Recommended for CLI use, with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-pipx install runspool
+uv tool install runspool
 ```
 
-If `pipx` is not installed on macOS:
+If you don't have uv yet:
 
 ```bash
-brew install pipx
-pipx ensurepath
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Then restart your terminal and check the command:
+Then check the command:
 
 ```bash
 runspool --help
@@ -59,15 +58,15 @@ runspool --help
 Alternatively, install with pip:
 
 ```bash
-python -m pip install runspool
+pip install runspool
 ```
 
-Or from source:
+Or from source (for development):
 
 ```bash
 git clone https://github.com/ethan-sun-dev/runspool
 cd runspool
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
 Requires Python 3.11+. Core dependencies: Typer, Pydantic, PyYAML (SQLite is in
@@ -265,9 +264,9 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ```bash
-pip install -e ".[dev]"
-ruff check .
-pytest
+uv sync --extra dev
+uv run ruff check .
+uv run pytest
 ```
 
 ## License

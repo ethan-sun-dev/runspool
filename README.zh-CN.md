@@ -33,20 +33,19 @@ Runspool 给这类自动化一根「主心骨」：
 
 ## 安装
 
-推荐用 `pipx` 安装 CLI：
+推荐用 [uv](https://docs.astral.sh/uv/) 安装 CLI：
 
 ```bash
-pipx install runspool
+uv tool install runspool
 ```
 
-如果 Mac 上还没有 `pipx`：
+如果还没有 uv：
 
 ```bash
-brew install pipx
-pipx ensurepath
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-然后重开终端并检查命令：
+然后检查命令：
 
 ```bash
 runspool --help
@@ -55,15 +54,15 @@ runspool --help
 也可以用 pip 安装：
 
 ```bash
-python -m pip install runspool
+pip install runspool
 ```
 
-或从源码安装：
+或从源码安装（用于开发）：
 
 ```bash
 git clone https://github.com/ethan-sun-dev/runspool
 cd runspool
-pip install -e ".[dev]"
+uv sync --extra dev
 ```
 
 需要 Python 3.11+。核心依赖：Typer、Pydantic、PyYAML（SQLite 来自标准库）。
