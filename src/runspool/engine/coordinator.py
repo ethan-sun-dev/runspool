@@ -38,10 +38,13 @@ class Coordinator:
         progressed = self._requeue_due_failures()
 
         # Current per-step running count (DB is the source of truth), incremented
-        # in memory as this tick claims more.
+        # in memory as this tick claims more. A PAUSE_PENDING task is still being
+        # executed by its worker thread (the pause is applied at the step
+        # boundary), so it still occupies a quota slot and must be counted.
         load: dict[str, int] = {}
-        for task in self.repo.list_by_status(TaskStatus.RUNNING):
-            load[task["step"]] = load.get(task["step"], 0) + 1
+        for status in (TaskStatus.RUNNING, TaskStatus.PAUSE_PENDING):
+            for task in self.repo.list_by_status(status):
+                load[task["step"]] = load.get(task["step"], 0) + 1
 
         for task in self.repo.list_by_status(TaskStatus.QUEUED):
             step_name = task["step"]
@@ -90,4 +93,6 @@ class Coordinator:
             workflow = self.config.workflow(task["workflow"])
         except KeyError:
             return None
-        return StateMachine(self.repo, self.log, workflow=workflow)
+        return StateMachine(
+            self.repo, self.log, workflow=workflow, step_runs=self.runner.step_runs
+        )
