@@ -101,6 +101,34 @@ def test_add_duplicate_blocked_without_force(tmp_path):
     assert _invoke(cfg, "add", str(src), "--force").exit_code == 0
 
 
+def test_control_commands_rejected_on_completed_task(tmp_path):
+    cfg = _init(tmp_path)
+    src = tmp_path / "done.txt"
+    src.write_text("hello world", encoding="utf-8")
+    _invoke(cfg, "add", str(src))
+    _invoke(cfg, "run")
+
+    # Task is completed; control actions must be refused and leave it untouched.
+    for cmd in (["retry", "1"], ["pause", "1"], ["resume", "1"], ["terminate", "1"]):
+        result = _invoke(cfg, *cmd)
+        assert result.exit_code == 1, f"{cmd} should be rejected"
+
+    status = json.loads(_invoke(cfg, "status", "1", "--json").output)
+    assert status["task_status"] == "completed"
+
+
+def test_set_step_requires_force_outside_recovery(tmp_path):
+    cfg = _init(tmp_path)
+    src = tmp_path / "x.txt"
+    src.write_text("hello", encoding="utf-8")
+    _invoke(cfg, "add", str(src))  # queued
+
+    blocked = _invoke(cfg, "set-step", "1", "archive")
+    assert blocked.exit_code == 1
+    forced = _invoke(cfg, "set-step", "1", "archive", "--force")
+    assert forced.exit_code == 0
+
+
 def test_add_unknown_workflow(tmp_path):
     cfg = _init(tmp_path)
     result = _invoke(cfg, "add", "x", "--workflow", "nope")

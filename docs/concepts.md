@@ -58,6 +58,22 @@ component that decides "queued → running", "running → next step", "fail →
 retry vs. manual_required", and the pause/resume/terminate transitions. Keeping
 these rules in one module is what makes the lifecycle predictable.
 
+User-initiated control actions are **guarded** there, not just in the CLI, so an
+illegal transition is refused no matter who calls it (a script or an AI agent
+included):
+
+| Action | Allowed from |
+| --- | --- |
+| `pause` | `queued`, `running` |
+| `resume` | `paused` |
+| `retry` | `failed`, `manual_required` |
+| `terminate` | any non-terminal state (refused on `completed` / `terminated`) |
+| `set-step` | `failed`, `manual_required` (or `--force`) |
+
+For example, `retry` on a `completed` task is rejected rather than silently
+re-queuing finished work. The valid actions for a task's current state are also
+reported by `runspool inspect <id>` as `available_actions`.
+
 ## Coordinator, worker pool, runner
 
 - The **coordinator** runs one scheduling *tick*: it scans queued tasks, skips

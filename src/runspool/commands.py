@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from runspool.app import AppContext
-from runspool.models import EventType
+from runspool.models import EventType, TaskStatus
+from runspool.persistence.state_machine import IllegalTransition
 
 
 class DuplicateTaskError(Exception):
@@ -65,11 +66,21 @@ def set_retries(ctx: AppContext, task_id: int, max_retries: int) -> None:
     ctx.repo.update_fields(task_id, {"max_retries": max_retries, "retry_count": 0})
 
 
-def set_step(ctx: AppContext, task_id: int, step: str) -> None:
+_SET_STEP_ALLOWED = (TaskStatus.FAILED, TaskStatus.MANUAL_REQUIRED)
+
+
+def set_step(ctx: AppContext, task_id: int, step: str, *, force: bool = False) -> None:
     task = _require_task(ctx, task_id)
     wf = ctx.config.workflow(task["workflow"])
     if step not in wf.steps:
         raise ValueError(f"step {step!r} is not part of workflow {wf.name!r}")
+    status = task["task_status"]
+    # Moving a running/queued task mid-flight, or rewinding a finished one, is a
+    # foot-gun; restrict to recovery states unless explicitly forced.
+    if not force and status not in _SET_STEP_ALLOWED:
+        raise IllegalTransition(
+            task_id, status, "set-step", allowed="failed or manual_required (use --force)"
+        )
     ctx.repo.update_fields(task_id, {"step": step})
 
 

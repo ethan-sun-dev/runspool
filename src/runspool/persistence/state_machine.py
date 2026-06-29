@@ -17,9 +17,25 @@ manual_required once retries are exhausted)::
 from __future__ import annotations
 
 from runspool.clock import utcnow_plus_text, utcnow_text
-from runspool.models import EventType, TaskStatus, WorkflowDef
+from runspool.models import TERMINAL_STATUSES, EventType, TaskStatus, WorkflowDef
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
+
+
+class IllegalTransition(Exception):
+    """A user-initiated control action is not valid for the task's current state.
+
+    Raised by the state machine so the guard lives in one place rather than only
+    in the CLI. Carries the task id, its current status, and the attempted action.
+    """
+
+    def __init__(self, task_id: int, status: str, action: str, *, allowed: str) -> None:
+        super().__init__(
+            f"cannot {action} task {task_id}: it is {status} (allowed when: {allowed})"
+        )
+        self.task_id = task_id
+        self.status = status
+        self.action = action
 
 
 class StateMachine:
@@ -27,6 +43,12 @@ class StateMachine:
         self.repo = repo
         self.log = log
         self.workflow = workflow
+
+    def _task_or_missing(self, task_id: int) -> dict:
+        task = self.repo.get_task(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        return task
 
     def claim(self, task_id: int, *, worker: str) -> bool:
         # Currently check-then-act (get then update). Safe here because only the
@@ -177,10 +199,11 @@ class StateMachine:
         )
 
     def request_pause(self, task_id: int) -> None:
-        task = self.repo.get_task(task_id)
-        if task is None:
-            return
-        if task["task_status"] == TaskStatus.RUNNING:
+        task = self._task_or_missing(task_id)
+        status = task["task_status"]
+        if status not in (TaskStatus.QUEUED, TaskStatus.RUNNING):
+            raise IllegalTransition(task_id, status, "pause", allowed="queued or running")
+        if status == TaskStatus.RUNNING:
             self.repo.update_fields(
                 task_id, {"task_status": TaskStatus.PAUSE_PENDING, "pause_requested": 1}
             )
@@ -206,10 +229,13 @@ class StateMachine:
         self.log.add(task_id, EventType.PAUSED)
 
     def request_terminate(self, task_id: int) -> None:
-        task = self.repo.get_task(task_id)
-        if task is None:
-            return
-        if task["task_status"] == TaskStatus.RUNNING:
+        task = self._task_or_missing(task_id)
+        status = task["task_status"]
+        if status in TERMINAL_STATUSES:
+            raise IllegalTransition(
+                task_id, status, "terminate", allowed="any non-terminal state"
+            )
+        if status == TaskStatus.RUNNING:
             self.repo.update_fields(task_id, {"terminate_requested": 1})
         else:
             self.repo.update_fields(task_id, {"task_status": TaskStatus.TERMINATED})
@@ -231,6 +257,10 @@ class StateMachine:
         self.log.add(task_id, EventType.TERMINATED)
 
     def resume(self, task_id: int) -> None:
+        task = self._task_or_missing(task_id)
+        status = task["task_status"]
+        if status != TaskStatus.PAUSED:
+            raise IllegalTransition(task_id, status, "resume", allowed="paused")
         # Defensively clear pause_requested so no stale pause signal survives.
         self.repo.update_fields(
             task_id, {"task_status": TaskStatus.QUEUED, "pause_requested": 0}
@@ -242,8 +272,14 @@ class StateMachine:
         # retry_count is maintained by fail() and not reset here. Human override
         # of an exhausted manual_required task (raising the cap) is provided by
         # the CLI's set-retries command.
+        task = self._task_or_missing(task_id)
+        status = task["task_status"]
+        if status not in (TaskStatus.FAILED, TaskStatus.MANUAL_REQUIRED):
+            raise IllegalTransition(
+                task_id, status, "retry", allowed="failed or manual_required"
+            )
         self.repo.update_fields(
-            task_id, {"task_status": TaskStatus.QUEUED, "last_error": None}
+            task_id, {"task_status": TaskStatus.QUEUED, "last_error": None, "next_retry_at": None}
         )
         self.log.add(task_id, EventType.RETRY)
 

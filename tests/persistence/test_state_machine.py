@@ -1,8 +1,10 @@
+import pytest
+
 from runspool.models import TaskStatus, WorkflowDef
 from runspool.persistence.connection import Database
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
-from runspool.persistence.state_machine import StateMachine
+from runspool.persistence.state_machine import IllegalTransition, StateMachine
 
 
 def _setup(tmp_path, steps=("a", "b"), max_retries=1):
@@ -106,6 +108,48 @@ def test_defer_keeps_step_and_requeues(tmp_path):
     assert task["step"] == "a"
     assert task["task_status"] == TaskStatus.QUEUED
     assert task["retry_count"] == 0
+
+
+def _force_status(repo, tid, status):
+    repo.update_fields(tid, {"task_status": status})
+
+
+def test_retry_rejected_on_completed(tmp_path):
+    repo, sm, tid = _setup(tmp_path)
+    _force_status(repo, tid, TaskStatus.COMPLETED)
+    with pytest.raises(IllegalTransition):
+        sm.retry(tid)
+    assert repo.get_task(tid)["task_status"] == TaskStatus.COMPLETED
+
+
+def test_pause_rejected_on_completed(tmp_path):
+    repo, sm, tid = _setup(tmp_path)
+    _force_status(repo, tid, TaskStatus.COMPLETED)
+    with pytest.raises(IllegalTransition):
+        sm.request_pause(tid)
+    assert repo.get_task(tid)["task_status"] == TaskStatus.COMPLETED
+
+
+def test_resume_rejected_when_not_paused(tmp_path):
+    repo, sm, tid = _setup(tmp_path)  # task is QUEUED
+    with pytest.raises(IllegalTransition):
+        sm.resume(tid)
+
+
+def test_terminate_rejected_on_terminal(tmp_path):
+    repo, sm, tid = _setup(tmp_path)
+    for terminal in (TaskStatus.COMPLETED, TaskStatus.TERMINATED):
+        _force_status(repo, tid, terminal)
+        with pytest.raises(IllegalTransition):
+            sm.request_terminate(tid)
+        assert repo.get_task(tid)["task_status"] == terminal
+
+
+def test_terminate_allowed_on_failed(tmp_path):
+    repo, sm, tid = _setup(tmp_path)
+    _force_status(repo, tid, TaskStatus.FAILED)
+    sm.request_terminate(tid)  # should not raise
+    assert repo.get_task(tid)["task_status"] == TaskStatus.TERMINATED
 
 
 def test_recover_interrupted_requeues_running(tmp_path):

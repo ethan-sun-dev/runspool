@@ -20,6 +20,7 @@ from runspool.display import (
     format_task_list,
 )
 from runspool.doctor import run_doctor
+from runspool.persistence.state_machine import IllegalTransition
 from runspool.runtime import (
     build_daemon,
     daemon_pid_file,
@@ -62,7 +63,7 @@ def _guard(action, ok_msg: str) -> None:
     except KeyError as exc:
         typer.echo(f"not found: {exc.args[0] if exc.args else exc}")
         raise typer.Exit(1) from exc
-    except ValueError as exc:
+    except (ValueError, IllegalTransition) as exc:
         typer.echo(str(exc))
         raise typer.Exit(1) from exc
     typer.echo(ok_msg)
@@ -256,9 +257,18 @@ def set_retries_cmd(
 
 
 @app.command(name="set-step")
-def set_step_cmd(task_id: int = typer.Argument(...), step: str = typer.Argument(...)) -> None:
+def set_step_cmd(
+    task_id: int = typer.Argument(...),
+    step: str = typer.Argument(...),
+    force: bool = typer.Option(
+        False, "--force", help="Allow moving a task that is not failed/manual_required."
+    ),
+) -> None:
     """Move a task to a specific step in its workflow."""
-    _guard(lambda: commands.set_step(_ctx(), task_id, step), f"task {task_id} step={step}")
+    _guard(
+        lambda: commands.set_step(_ctx(), task_id, step, force=force),
+        f"task {task_id} step={step}",
+    )
 
 
 @app.command()
