@@ -103,7 +103,7 @@ queued → running → (next step) queued → … → completed
                  ↘ failed ──(retry)──↗
                  ↘ manual_required          (retries exhausted; needs you)
    running → pause_pending → paused → (resume) queued
-   any → terminated
+   non-terminal → terminated   (completed / terminated refuse further control)
 ```
 
 ## CLI
