@@ -21,6 +21,9 @@ class StepContext:
 
     task: dict[str, Any]
     config: Any
+    # True when termination was requested; a long step should check this and
+    # return early. Pause is NOT signalled here: it is applied at the step
+    # boundary, so a running step is always allowed to finish.
     should_stop: Callable[[], bool]
     # No argument / None = refresh heartbeat only; pass a progress string to
     # refresh the heartbeat and persist ``progress`` (throttled by the runner).

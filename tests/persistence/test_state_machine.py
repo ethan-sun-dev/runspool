@@ -91,6 +91,23 @@ def test_pause_resume_cycle(tmp_path):
     assert repo.get_task(tid)["task_status"] == TaskStatus.QUEUED
 
 
+def test_pause_after_successful_step_advances_and_pauses(tmp_path):
+    repo, sm, tid = _setup(tmp_path, steps=("a", "b"))
+    sm.claim(tid, worker="w1")
+    sm.pause_after_successful_step(tid)
+    task = repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.PAUSED
+    assert task["step"] == "b"           # advanced, not stuck on a
+    assert task["pause_requested"] == 0
+
+
+def test_pause_after_successful_last_step_completes(tmp_path):
+    repo, sm, tid = _setup(tmp_path, steps=("only",))
+    sm.claim(tid, worker="w1")
+    sm.pause_after_successful_step(tid)
+    assert repo.get_task(tid)["task_status"] == TaskStatus.COMPLETED
+
+
 def test_terminate_flag_then_apply(tmp_path):
     repo, sm, tid = _setup(tmp_path)
     sm.claim(tid, worker="w1")

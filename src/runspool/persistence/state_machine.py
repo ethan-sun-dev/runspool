@@ -212,8 +212,9 @@ class StateMachine:
         self.log.add(task_id, EventType.PAUSE_REQUESTED, step=task["step"])
 
     def apply_pause(self, task_id: int) -> None:
-        # Should only be called after request_pause, once the worker reaches a
-        # safe point.
+        # Pause in place (same step). Used for crash recovery, where the step was
+        # interrupted before finishing, so re-running it on resume is correct.
+        # For a step that finished successfully, use pause_after_successful_step.
         if self.repo.get_task(task_id) is None:
             return
         self.repo.update_fields(
@@ -227,6 +228,49 @@ class StateMachine:
             },
         )
         self.log.add(task_id, EventType.PAUSED)
+
+    def pause_after_successful_step(self, task_id: int) -> None:
+        """Apply a pause requested while a step was running, at the step boundary.
+
+        The step just completed successfully, so we must NOT leave the task on
+        that step (resuming would re-run an already-done, possibly side-effectful
+        step). Instead advance to the next step and pause there; if that was the
+        last step there is nothing to pause before, so complete the workflow.
+        """
+        task = self.repo.get_task(task_id)
+        if task is None:
+            return
+        nxt = self.workflow.next_step(task["step"])
+        if nxt.done:
+            self.repo.update_fields(
+                task_id,
+                {
+                    "task_status": TaskStatus.COMPLETED,
+                    "pause_requested": 0,
+                    "locked_by": None,
+                    "locked_at": None,
+                    "heartbeat_at": None,
+                },
+            )
+            self.log.add(
+                task_id, EventType.COMPLETED, step=task["step"], message="workflow completed"
+            )
+            return
+        self.repo.update_fields(
+            task_id,
+            {
+                "step": nxt.step,
+                "task_status": TaskStatus.PAUSED,
+                "pause_requested": 0,
+                "locked_by": None,
+                "locked_at": None,
+                "heartbeat_at": None,
+            },
+        )
+        self.log.add(
+            task_id, EventType.STEP_COMPLETED, step=task["step"], message=f"advanced to {nxt.step}"
+        )
+        self.log.add(task_id, EventType.PAUSED, step=nxt.step)
 
     def request_terminate(self, task_id: int) -> None:
         task = self._task_or_missing(task_id)

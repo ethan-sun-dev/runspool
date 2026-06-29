@@ -93,11 +93,27 @@ def test_terminate_flag_applied_after_step(tmp_path):
     assert repo.get_task(tid)["task_status"] == TaskStatus.TERMINATED
 
 
-def test_pause_flag_applied_after_step(tmp_path):
-    runner, repo, runs, tid = _setup(tmp_path, _Stoppable())
+def test_pause_advances_then_pauses_so_step_is_not_rerun(tmp_path):
+    # Pause requested mid-step: the step finishes, then the task pauses at the
+    # NEXT step. Resuming must not re-run the already-completed step.
+    runner, repo, runs, tid = _setup(tmp_path, _Ok())  # workflow: alpha -> beta
     repo.update_fields(tid, {"pause_requested": 1})
     runner.execute(tid)
-    assert repo.get_task(tid)["task_status"] == TaskStatus.PAUSED
+    task = repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.PAUSED
+    assert task["step"] == "beta"          # advanced past the completed step
+    assert task["pause_requested"] == 0    # request consumed
+    # alpha ran exactly once and recorded a successful run.
+    alpha_runs = [r for r in runs.list_for_task(tid) if r["step"] == "alpha"]
+    assert len(alpha_runs) == 1 and alpha_runs[0]["status"] == "ok"
+
+
+def test_pause_on_last_step_completes_instead_of_pausing(tmp_path):
+    # There is no later step to pause before, so the workflow completes.
+    runner, repo, runs, tid = _setup(tmp_path, _Ok(), steps=("alpha",))
+    repo.update_fields(tid, {"pause_requested": 1})
+    runner.execute(tid)
+    assert repo.get_task(tid)["task_status"] == TaskStatus.COMPLETED
 
 
 def test_bad_updates_fail_task(tmp_path):

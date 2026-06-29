@@ -22,7 +22,7 @@ class MyStep(Step):
 | --- | --- |
 | `ctx.task` | The task row as a dict: `id`, `input`, `name`, `workflow`, `step`, `priority`, retry counters, … |
 | `ctx.config` | The resolved `AppConfig` (e.g. `ctx.config.workspace_root`). |
-| `ctx.should_stop()` | Returns `True` if a pause or terminate was requested — check it during long loops and return early. |
+| `ctx.should_stop()` | Returns `True` when **termination** was requested — check it during long loops and return early. Pause is not signalled here: it is applied at the step boundary, so a running step always finishes. |
 | `ctx.heartbeat(progress=None)` | Refresh the heartbeat; pass a string to also record progress. Writes are throttled to ~1/second. |
 
 ### `StepResult` (what you return)

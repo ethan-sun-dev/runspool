@@ -121,7 +121,15 @@ class TaskRunner:
             sm.apply_terminate(task_id)
             self._notify(fresh, f"terminated after step {task['step']}")
         elif fresh["pause_requested"]:
-            sm.apply_pause(task_id)
+            # The step finished; pause at the boundary by advancing first so the
+            # completed step is not re-run on resume.
+            sm.pause_after_successful_step(task_id)
+            done = self.repo.get_task(task_id)
+            if done and done["task_status"] == "completed":
+                self._notify(done, f"step {task['step']} done, workflow complete")
+            else:
+                nxt = done["step"] if done else "?"
+                self._notify(done or fresh, f"step {task['step']} done, paused before {nxt}")
         else:
             sm.complete_step(task_id)
             # Report success too, distinguishing "all done" from "next step".
@@ -134,5 +142,8 @@ class TaskRunner:
                 self._notify(done or fresh, f"step {task['step']} done, advancing to {nxt}{tail}")
 
     def _stop_requested(self, task_id: int) -> bool:
+        # should_stop signals termination only. Pause is applied at step
+        # boundaries (see pause_after_successful_step), so a running step is
+        # always allowed to finish rather than being interrupted mid-work.
         task = self.repo.get_task(task_id)
-        return bool(task and (task["pause_requested"] or task["terminate_requested"]))
+        return bool(task and task["terminate_requested"])
