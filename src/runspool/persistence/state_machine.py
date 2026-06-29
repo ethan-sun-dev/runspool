@@ -66,24 +66,15 @@ class StateMachine:
         return task
 
     def claim(self, task_id: int, *, worker: str) -> bool:
-        # Currently check-then-act (get then update). Safe here because only the
-        # single-threaded Coordinator calls claim (worker threads only run
-        # runner.execute). To add multiple coordinators or processes, switch to a
-        # single atomic ``UPDATE ... WHERE id=? AND task_status='queued'`` and use
-        # rowcount to decide whether the claim succeeded.
+        # Atomic claim: the repository runs a single conditional UPDATE guarded by
+        # ``task_status='queued'`` and reports via rowcount whether this caller
+        # won. This is safe even when the daemon and a CLI process race for the
+        # same task; check-then-act could otherwise let two callers both claim it.
         task = self.repo.get_task(task_id)
-        if task is None or task["task_status"] != TaskStatus.QUEUED:
+        if task is None:
             return False
-        now = utcnow_text()
-        self.repo.update_fields(
-            task_id,
-            {
-                "task_status": TaskStatus.RUNNING,
-                "locked_by": worker,
-                "locked_at": now,
-                "heartbeat_at": now,
-            },
-        )
+        if not self.repo.claim_queued(task_id, worker=worker, now=utcnow_text()):
+            return False
         self.log.add(task_id, EventType.CLAIMED, step=task["step"], message=f"claimed by {worker}")
         return True
 

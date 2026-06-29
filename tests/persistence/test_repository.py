@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from runspool.models import TaskStatus
@@ -50,3 +52,38 @@ def test_input_is_immutable(tmp_path):
     tid = repo.create_task(input="a", workflow="w", first_step="s", max_retries=0)
     with pytest.raises(ValueError):
         repo.update_fields(tid, {"input": "hacked"})
+
+
+def test_claim_queued_is_conditional(tmp_path):
+    repo = _repo(tmp_path)
+    tid = repo.create_task(input="a", workflow="w", first_step="s", max_retries=0)
+    assert repo.claim_queued(tid, worker="w1", now="2026-01-01 00:00:00") is True
+    # Already RUNNING: a second claim must fail (precondition not met).
+    assert repo.claim_queued(tid, worker="w2", now="2026-01-01 00:00:01") is False
+    task = repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.RUNNING
+    assert task["locked_by"] == "w1"
+
+
+def test_concurrent_claims_only_one_wins(tmp_path):
+    # The conditional UPDATE makes claiming atomic: with many threads racing for
+    # the same queued task, exactly one wins. (check-then-act could let two win.)
+    repo = _repo(tmp_path)
+    tid = repo.create_task(input="a", workflow="w", first_step="s", max_retries=0)
+    n = 8
+    barrier = threading.Barrier(n)
+    results: list[bool] = []
+    lock = threading.Lock()
+
+    def worker(i: int) -> None:
+        barrier.wait()
+        won = repo.claim_queued(tid, worker=f"w{i}", now="2026-01-01 00:00:00")
+        with lock:
+            results.append(won)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count(True) == 1
