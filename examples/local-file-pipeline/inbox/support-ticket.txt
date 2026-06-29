@@ -1,0 +1,18 @@
+Support ticket: TICKET-5519
+
+Reporter: jordan@northwind.example
+Severity: high
+
+Summary: The export button is broken and the app cannot finish a CSV export.
+
+Details:
+When I click "Export to CSV" the progress bar reaches about 80% and then shows
+an error: "unexpected end of stream". I can reproduce this every time with a
+report larger than ~10,000 rows. Smaller exports work fine.
+
+Steps to reproduce:
+1. Open a report with more than 10k rows.
+2. Click Export to CSV.
+3. Wait for the error.
+
+Impact: we cannot deliver the monthly numbers to our client. Please advise.

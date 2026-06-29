@@ -1,0 +1,12 @@
+# Provenance for the sources in this directory (informational).
+sources:
+  - file: client_profile.md
+    origin: discovery call, 2026-06-08
+  - file: requirements.md
+    origin: RFP response, 2026-06-12
+  - file: competitors/acme.md
+    origin: public website + analyst note
+  - file: competitors/globex.md
+    origin: public website
+  - file: customer_notes/call-2026-06-10.md
+    origin: sales call recording summary

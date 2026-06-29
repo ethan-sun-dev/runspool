@@ -1,0 +1,45 @@
+# Runspool example configuration
+#
+# Copy to `config.yaml` (or run `runspool init`) and edit to taste. Everything
+# Runspool stores lives under workspace_root; nothing is sent anywhere.
+
+# Base directory for all local state: the SQLite database, logs, runtime files,
+# task working directories, and archived output.
+workspace_root: ./workspace
+
+# Optional path overrides (relative paths resolve under workspace_root).
+# database_path: ./workspace/runspool.db
+# logs_dir: ./workspace/logs
+# runtime_dir: ./workspace/runtime
+
+scheduler:
+  poll_interval_seconds: 5   # how often the daemon scans for runnable work
+  max_retries: 3             # default retry budget applied to new tasks
+  retry_delay_seconds: 60
+
+worker_pool:
+  size: 4                    # maximum concurrent step executions
+  heartbeat_timeout_seconds: 1800  # reclaim a task whose worker went silent
+
+# Per-step concurrency quota. Default is 1 (steps of the same kind do not
+# overlap). Raise it for cheap, parallel-safe steps.
+concurrency:
+  # ingest_file: 4
+
+# Workflows are ordered lists of step names. A task runs its steps in order,
+# pausing/retrying/terminating as directed. The built-in steps below need no
+# network access, API keys, or external tools.
+workflows:
+  local_file:
+    steps: [ingest_file, classify_text, normalize_markdown, summarize_text, archive]
+
+# Custom steps: load your own Step subclasses dynamically.
+#
+# plugin_paths are directories added to sys.path before importing (resolved
+# relative to THIS config file), so your step modules can live next to the
+# config. See docs/writing-steps.md.
+#
+# plugin_paths: [steps]
+# steps:
+#   my_custom_step:
+#     import: "my_module:MyCustomStep"   # "<module path>:<Step subclass>"

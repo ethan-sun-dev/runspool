@@ -1,0 +1,4 @@
+(placeholder asset)
+
+This stands in for a cover image. Real assets (PNG/JPG) would live here and be
+copied into dist/assets/ by the render_platform_package step.

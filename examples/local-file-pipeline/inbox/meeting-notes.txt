@@ -1,0 +1,21 @@
+Meeting notes — Q3 planning
+
+Date: 2026-06-20
+Attendees: Priya, Marcus, Dana, Lee
+
+Agenda:
+- Review Q2 results
+- Decide Q3 priorities
+- Assign owners
+
+Discussed:
+We agreed that onboarding friction is the biggest driver of churn. Dana shared
+that 40% of trial users never reach the first successful workflow run. Marcus
+proposed a guided quickstart. Lee raised concerns about scope for the quarter.
+
+Action items:
+- Priya: draft the guided quickstart spec by 2026-06-27.
+- Marcus: prototype the first-run checklist.
+- Dana: pull churn cohorts for the last two quarters.
+
+Next steps: reconvene next week to review the spec and prototype.

@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "runspool"
+version = "0.1.0"
+description = "A local-first CLI workflow engine for reliable personal automation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Runspool contributors" }]
+keywords = [
+    "workflow",
+    "automation",
+    "cli",
+    "local-first",
+    "task-queue",
+    "sqlite",
+    "agent",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: System :: Distributed Computing",
+]
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/ethan-sun-dev/runspool"
+Repository = "https://github.com/ethan-sun-dev/runspool"
+Documentation = "https://github.com/ethan-sun-dev/runspool/tree/main/docs"
+Issues = "https://github.com/ethan-sun-dev/runspool/issues"
+
+[project.scripts]
+runspool = "runspool.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/runspool"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer uses function calls (typer.Option/Argument) in parameter defaults by
+# design; B008 is a false positive for this idiom.
+"src/runspool/cli.py" = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
