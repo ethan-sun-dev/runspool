@@ -134,6 +134,8 @@ runspool init                     # create config + database
 runspool add <input> -w <wf>      # queue a task (default workflow: local_file)
 runspool run                      # advance all runnable tasks once (great for demos)
 runspool daemon                   # run a resident loop (long-running automation)
+runspool daemon-status            # report whether a daemon is running
+runspool daemon-stop              # signal a running daemon to stop
 runspool status [<id>]            # list tasks, or show one in detail
 runspool inspect <id>             # agent-friendly snapshot + suggested next action
 runspool logs <id>                # event history for a task
