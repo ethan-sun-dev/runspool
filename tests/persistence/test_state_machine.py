@@ -118,6 +118,31 @@ def test_terminate_flag_then_apply(tmp_path):
     assert repo.get_task(tid)["task_status"] == TaskStatus.TERMINATED
 
 
+def test_terminate_while_pause_pending_does_not_resurrect_as_paused(tmp_path):
+    # Regression: terminating a task that was mid-pause (PAUSE_PENDING, so a
+    # worker is still finishing the step) must win. Previously request_terminate
+    # wrote TERMINATED directly but left pause_requested=1, so when the step
+    # finished the runner ran pause_after_successful_step and overwrote the
+    # terminal state with PAUSED. The fix defers to the flag and applies
+    # terminate at the boundary.
+    repo, sm, tid = _setup(tmp_path)
+    sm.claim(tid, worker="w1")
+    sm.request_pause(tid)
+    assert repo.get_task(tid)["task_status"] == TaskStatus.PAUSE_PENDING
+
+    sm.request_terminate(tid)
+    task = repo.get_task(tid)
+    assert task["terminate_requested"] == 1  # deferred, not written directly
+
+    # Simulate the worker reaching the step boundary: terminate takes precedence
+    # over the still-set pause request (this is the order runner.execute uses).
+    assert repo.get_task(tid)["terminate_requested"]
+    sm.apply_terminate(tid)
+    task = repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.TERMINATED
+    assert task["pause_requested"] == 0  # stale pause signal cleared
+
+
 def test_defer_keeps_step_and_requeues(tmp_path):
     repo, sm, tid = _setup(tmp_path)
     sm.claim(tid, worker="w1")

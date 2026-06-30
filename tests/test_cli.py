@@ -151,6 +151,37 @@ def test_run_refused_while_daemon_running(tmp_path, monkeypatch):
     assert forced.exit_code == 0
 
 
+def test_set_retries_rejects_negative(tmp_path):
+    cfg = _init(tmp_path)
+    src = tmp_path / "a.txt"
+    src.write_text("hello world", encoding="utf-8")
+    _invoke(cfg, "add", str(src))
+
+    # A negative cap is refused (mirrors the config model's ge=0 constraint).
+    bad = _invoke(cfg, "set-retries", "1", "--", "-5")
+    assert bad.exit_code == 1
+    assert "max-retries must be >= 0" in bad.output
+    # The task's cap is left untouched.
+    status = json.loads(_invoke(cfg, "status", "1", "--json").output)
+    assert status["max_retries"] >= 0
+
+    # A valid value still works.
+    assert _invoke(cfg, "set-retries", "1", "3").exit_code == 0
+
+
+def test_logs_missing_task_reports_not_found(tmp_path):
+    cfg = _init(tmp_path)
+    # Human output: clear message + non-zero exit (consistent with status/inspect).
+    human = _invoke(cfg, "logs", "999")
+    assert human.exit_code == 1
+    assert "not found" in human.output
+    # JSON output: a not_found error object, not an empty list that an agent
+    # could misread as "task exists but has no events".
+    js = _invoke(cfg, "logs", "999", "--json")
+    assert js.exit_code == 1
+    assert json.loads(js.output) == {"error": "not_found", "id": 999}
+
+
 def test_add_unknown_workflow(tmp_path):
     cfg = _init(tmp_path)
     result = _invoke(cfg, "add", "x", "--workflow", "nope")

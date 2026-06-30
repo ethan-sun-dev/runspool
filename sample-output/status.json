@@ -1,0 +1,47 @@
+[
+  {
+    "id": 1,
+    "name": "invoice",
+    "input": "./inbox/invoice.txt",
+    "workflow": "local_file",
+    "step": "archive",
+    "task_status": "completed",
+    "priority": 0,
+    "retry_count": 0,
+    "max_retries": 3,
+    "progress": null,
+    "last_error": null,
+    "created_at": "2026-06-30 03:01:02",
+    "updated_at": "2026-06-30 03:01:03"
+  },
+  {
+    "id": 2,
+    "name": "support-ticket",
+    "input": "./inbox/support-ticket.txt",
+    "workflow": "local_file",
+    "step": "archive",
+    "task_status": "completed",
+    "priority": 0,
+    "retry_count": 0,
+    "max_retries": 3,
+    "progress": null,
+    "last_error": null,
+    "created_at": "2026-06-30 03:01:03",
+    "updated_at": "2026-06-30 03:01:03"
+  },
+  {
+    "id": 3,
+    "name": "meeting-notes",
+    "input": "./inbox/meeting-notes.txt",
+    "workflow": "local_file",
+    "step": "archive",
+    "task_status": "completed",
+    "priority": 0,
+    "retry_count": 0,
+    "max_retries": 3,
+    "progress": null,
+    "last_error": null,
+    "created_at": "2026-06-30 03:01:03",
+    "updated_at": "2026-06-30 03:01:03"
+  }
+]

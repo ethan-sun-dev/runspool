@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- Terminating a task that was mid-pause (`pause_pending`) is no longer
+  resurrected as `paused` when the running step finishes: `terminate` now defers
+  to the step boundary like `running` and takes precedence over a pending pause.
+- `set-retries` now rejects a negative cap (mirroring the config model's `ge=0`),
+  instead of silently disabling retries by routing the first failure straight to
+  `manual_required`.
+- `logs <id>` for a non-existent task now returns `not_found` with a non-zero
+  exit (matching `status` and `inspect`), instead of an empty list that could be
+  misread as "task exists but has no events".
 - `run` now refuses to start while a daemon is active (use `--force` to
   override), preventing it from requeueing the daemon's in-flight tasks and
   executing the same step twice.
@@ -24,6 +33,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   previous archive if a move fails and skips re-archiving a completed task.
 - SQLite connections now use WAL journaling and a busy timeout to avoid
   `database is locked` errors under concurrent writers.
+
+### Added
+- `docs/design-decisions.md` documenting the *why* behind the architecture
+  (local-first SQLite, steps-never-touch-the-DB, centralized state machine,
+  atomic claiming, boundary-applied pause/terminate, the agent JSON contract).
+- `sample-output/` with committed quickstart output (`inspect --json`,
+  `status --json`, and the produced artifacts) so the result is visible without
+  running anything.
 
 ### Changed
 - Unified maintainer identity to `Ethan Sun <ethan@ethansun.dev>` across the
