@@ -95,6 +95,50 @@ You'll see the task flow through five steps and land its artifacts under
 metadata). That's a complete workflow with persisted state, logs, and a step
 timeline — and it ran with zero external dependencies.
 
+## See the result (20 seconds, nothing to install)
+
+Don't want to run it? Real, committed output of the quickstart lives in
+[`sample-output/`](sample-output/). Here's what `runspool inspect 1 --json`
+returns after the invoice above completes — a single call that gives a script or
+AI agent the whole picture:
+
+```jsonc
+{
+  "id": 1,
+  "name": "invoice",
+  "status": "completed",
+  "current_step": "archive",
+  "step_runs": [
+    { "step": "ingest_file",        "status": "ok", "duration_ms": 1 },
+    { "step": "classify_text",      "status": "ok", "duration_ms": 0 },
+    { "step": "normalize_markdown", "status": "ok", "duration_ms": 0 },
+    { "step": "summarize_text",     "status": "ok", "duration_ms": 0 },
+    { "step": "archive",            "status": "ok", "duration_ms": 0 }
+  ],
+  "artifacts": [
+    "ready/1/classification.json", "ready/1/metadata.json",
+    "ready/1/normalized.md",       "ready/1/summary.md", "..."
+  ],
+  "available_actions": [],
+  "suggested_next_action": "Task is complete; no action needed."
+}
+```
+
+And the workflow turned a raw `invoice.txt` into structured artifacts — e.g.
+[`ready/1/classification.json`](sample-output/ready/1/classification.json):
+
+```json
+{ "category": "invoice", "confidence": 1.0,
+  "matched_keywords": ["invoice", "amount due", "subtotal", "total", "payment terms"] }
+```
+
+The full snapshot, task list, and every produced file are in
+[`sample-output/`](sample-output/). Note `step_runs` (per-step timing — failures
+are attributable to a step, not just the task) and `available_actions` /
+`suggested_next_action` (the engine tells an agent what it *can* and *should* do
+next). See [docs/design-decisions.md](docs/design-decisions.md) for why it's
+shaped this way.
+
 ## What it looks like
 
 ```mermaid
@@ -235,6 +279,15 @@ across many ticks, so long steps don't block the queue, and a per-step
 silent worker's task is reclaimed by heartbeat timeout. See
 [docs/concepts.md](docs/concepts.md).
 
+**Claiming is atomic.** A task is claimed with a single conditional
+`UPDATE ... WHERE task_status = 'queued'`, and the caller checks `rowcount` to
+learn whether it won — never check-then-act. That makes claiming correct even
+when two processes race for the same task (e.g. a `run` invocation alongside a
+live `daemon`), so exactly one worker ever executes a given step. The state
+machine is the only place transitions are decided; steps return data and never
+touch the database. The reasoning behind these boundaries is in
+[docs/design-decisions.md](docs/design-decisions.md).
+
 ## Privacy & safety
 
 - **Local-first.** All state lives under `workspace_root` on your machine. There
@@ -252,7 +305,6 @@ silent worker's task is reclaimed by heartbeat timeout. See
 
 ## Roadmap
 
-- Atomic multi-coordinator claiming (single-process is solid today).
 - `runspool watch` to follow a task's events live.
 - Optional structured log export (JSONL).
 - A small library of community step plugins.

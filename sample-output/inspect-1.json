@@ -1,0 +1,97 @@
+{
+  "id": 1,
+  "name": "invoice",
+  "input": "./inbox/invoice.txt",
+  "status": "completed",
+  "workflow": "local_file",
+  "current_step": "archive",
+  "priority": 0,
+  "retry_count": 0,
+  "max_retries": 3,
+  "progress": null,
+  "last_error": null,
+  "recent_events": [
+    {
+      "event_type": "completed",
+      "step": "archive",
+      "message": "workflow completed",
+      "created_at": "2026-06-30 03:01:03"
+    },
+    {
+      "event_type": "claimed",
+      "step": "archive",
+      "message": "claimed by pool-1",
+      "created_at": "2026-06-30 03:01:03"
+    },
+    {
+      "event_type": "step_completed",
+      "step": "summarize_text",
+      "message": "advanced to archive",
+      "created_at": "2026-06-30 03:01:03"
+    },
+    {
+      "event_type": "claimed",
+      "step": "summarize_text",
+      "message": "claimed by pool-1",
+      "created_at": "2026-06-30 03:01:03"
+    },
+    {
+      "event_type": "step_completed",
+      "step": "normalize_markdown",
+      "message": "advanced to summarize_text",
+      "created_at": "2026-06-30 03:01:03"
+    }
+  ],
+  "step_runs": [
+    {
+      "step": "ingest_file",
+      "status": "ok",
+      "duration_ms": 1,
+      "error": null,
+      "started_at": "2026-06-30 03:01:03",
+      "finished_at": "2026-06-30 03:01:03"
+    },
+    {
+      "step": "classify_text",
+      "status": "ok",
+      "duration_ms": 0,
+      "error": null,
+      "started_at": "2026-06-30 03:01:03",
+      "finished_at": "2026-06-30 03:01:03"
+    },
+    {
+      "step": "normalize_markdown",
+      "status": "ok",
+      "duration_ms": 0,
+      "error": null,
+      "started_at": "2026-06-30 03:01:03",
+      "finished_at": "2026-06-30 03:01:03"
+    },
+    {
+      "step": "summarize_text",
+      "status": "ok",
+      "duration_ms": 0,
+      "error": null,
+      "started_at": "2026-06-30 03:01:03",
+      "finished_at": "2026-06-30 03:01:03"
+    },
+    {
+      "step": "archive",
+      "status": "ok",
+      "duration_ms": 0,
+      "error": null,
+      "started_at": "2026-06-30 03:01:03",
+      "finished_at": "2026-06-30 03:01:03"
+    }
+  ],
+  "artifacts": [
+    "ready/1/classification.json",
+    "ready/1/metadata.json",
+    "ready/1/normalized.md",
+    "ready/1/source.txt",
+    "ready/1/summary.json",
+    "ready/1/summary.md"
+  ],
+  "available_actions": [],
+  "suggested_next_action": "Task is complete; no action needed."
+}

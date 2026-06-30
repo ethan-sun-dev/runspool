@@ -89,6 +89,48 @@ runspool inspect 1
 分类、元数据）。这就是一个带持久化状态、日志和步骤时间线的完整工作流——而且零外部
 依赖。
 
+## 看结果（20 秒，无需安装）
+
+不想跑？快速上手的真实产物已提交在 [`sample-output/`](sample-output/)。上面那份
+invoice 完成后，`runspool inspect 1 --json` 返回的内容如下——一次调用就把脚本或 AI
+agent 需要的全貌交到手里：
+
+```jsonc
+{
+  "id": 1,
+  "name": "invoice",
+  "status": "completed",
+  "current_step": "archive",
+  "step_runs": [
+    { "step": "ingest_file",        "status": "ok", "duration_ms": 1 },
+    { "step": "classify_text",      "status": "ok", "duration_ms": 0 },
+    { "step": "normalize_markdown", "status": "ok", "duration_ms": 0 },
+    { "step": "summarize_text",     "status": "ok", "duration_ms": 0 },
+    { "step": "archive",            "status": "ok", "duration_ms": 0 }
+  ],
+  "artifacts": [
+    "ready/1/classification.json", "ready/1/metadata.json",
+    "ready/1/normalized.md",       "ready/1/summary.md", "..."
+  ],
+  "available_actions": [],
+  "suggested_next_action": "Task is complete; no action needed."
+}
+```
+
+工作流把原始的 `invoice.txt` 变成了结构化产物，例如
+[`ready/1/classification.json`](sample-output/ready/1/classification.json)：
+
+```json
+{ "category": "invoice", "confidence": 1.0,
+  "matched_keywords": ["invoice", "amount due", "subtotal", "total", "payment terms"] }
+```
+
+完整快照、任务列表和每个产物都在 [`sample-output/`](sample-output/)。注意
+`step_runs`（每步独立计时——失败可归因到具体步骤，而非整个任务）和
+`available_actions` / `suggested_next_action`（引擎直接告诉 agent 当前**能**做什么、
+**该**做什么）。为什么这样设计，见
+[docs/design-decisions.md](docs/design-decisions.md)。
+
 ## 命令行（CLI）
 
 ```text

@@ -1,0 +1,13 @@
+{
+  "category": "invoice",
+  "confidence": 1.0,
+  "matched_keywords": [
+    "invoice",
+    "amount due",
+    "subtotal",
+    "tax",
+    "total",
+    "bill to",
+    "payment terms"
+  ]
+}
