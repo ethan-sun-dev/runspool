@@ -176,6 +176,15 @@ def logs(
 ) -> None:
     """Show a task's event log."""
     ctx = _ctx()
+    # Distinguish "no such task" from "task exists but has no events": an empty
+    # list could otherwise be misread (especially by an agent) as the latter.
+    # Mirror status/inspect, which return not_found + exit 1 for a missing id.
+    if ctx.repo.get_task(task_id) is None:
+        if json_output:
+            _emit_json({"error": "not_found", "id": task_id})
+        else:
+            typer.echo(f"task {task_id} not found")
+        raise typer.Exit(1)
     if json_output:
         _emit_json(events_view(ctx.log.list_for_task(task_id, limit=limit)))
     else:

@@ -62,6 +62,11 @@ def set_priority(ctx: AppContext, task_id: int, priority: int) -> None:
 
 
 def set_retries(ctx: AppContext, task_id: int, max_retries: int) -> None:
+    # Mirror the config model's ge=0 constraint: a negative cap would make
+    # fail()'s `retry_count > max_retries` check route the very first failure
+    # straight to manual_required, silently disabling retries.
+    if max_retries < 0:
+        raise ValueError(f"max-retries must be >= 0, got {max_retries}")
     _require_task(ctx, task_id)
     ctx.repo.update_fields(task_id, {"max_retries": max_retries, "retry_count": 0})
 

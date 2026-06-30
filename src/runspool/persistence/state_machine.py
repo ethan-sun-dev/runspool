@@ -285,7 +285,14 @@ class StateMachine:
             raise IllegalTransition(
                 task_id, status, "terminate", allowed="any non-terminal state"
             )
-        if status == TaskStatus.RUNNING:
+        # RUNNING and PAUSE_PENDING both mean a worker is mid-step. Defer the
+        # transition to the step boundary via the flag: the runner applies
+        # terminate there, and it checks terminate_requested *before*
+        # pause_requested (see runner.execute), so a pause requested earlier
+        # cannot resurrect the task as paused after we terminate it. Writing
+        # TERMINATED directly here would be clobbered by pause_after_successful_step
+        # when the still-running step finishes with pause_requested=1.
+        if status in (TaskStatus.RUNNING, TaskStatus.PAUSE_PENDING):
             self.repo.update_fields(task_id, {"terminate_requested": 1})
         else:
             self.repo.update_fields(task_id, {"task_status": TaskStatus.TERMINATED})
@@ -299,6 +306,9 @@ class StateMachine:
             {
                 "task_status": TaskStatus.TERMINATED,
                 "terminate_requested": 0,
+                # Clear any pending pause too: terminate wins, and a terminal
+                # task must not carry a stale pause signal.
+                "pause_requested": 0,
                 "locked_by": None,
                 "locked_at": None,
                 "heartbeat_at": None,

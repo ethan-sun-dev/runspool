@@ -95,6 +95,18 @@ def test_terminate_flag_applied_after_step(tmp_path):
     assert repo.get_task(tid)["task_status"] == TaskStatus.TERMINATED
 
 
+def test_terminate_wins_over_concurrent_pause_request(tmp_path):
+    # Regression: a task paused mid-step (pause_requested=1) and then terminated
+    # (terminate_requested=1) must end TERMINATED, not PAUSED. The runner checks
+    # terminate_requested before pause_requested, so the pause must not win.
+    runner, repo, runs, tid = _setup(tmp_path, _Ok())
+    repo.update_fields(tid, {"pause_requested": 1, "terminate_requested": 1})
+    runner.execute(tid)
+    task = repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.TERMINATED
+    assert task["step"] == "alpha"  # not advanced by pause_after_successful_step
+
+
 def test_pause_advances_then_pauses_so_step_is_not_rerun(tmp_path):
     # Pause requested mid-step: the step finishes, then the task pauses at the
     # NEXT step. Resuming must not re-run the already-completed step.
