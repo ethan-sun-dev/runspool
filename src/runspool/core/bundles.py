@@ -6,8 +6,9 @@ them by id (``{id: builtin-archive, disabled: true}``).
 
 from __future__ import annotations
 
-# Services every RunSpool needs. "store" is a seam (replaceable); the rest are core.
-CORE_SERVICES = ("store", "steps", "workflows", "tasks", "runtime", "doctor")
+# Services every RunSpool needs. "store" and "credentials" are seams (replaceable);
+# the rest are core.
+CORE_SERVICES = ("store", "credentials", "steps", "workflows", "tasks", "runtime", "doctor")
 # Core entries that may not be disabled: they carry the engine's invariants.
 LOCKED_CORE_IDS = ("steps", "workflows", "tasks", "runtime", "doctor")
 
@@ -20,6 +21,7 @@ CORE = [
             {"id": "tasks", "plugin": "runspool.core.tasks:plugin"},
             {"id": "runtime", "plugin": "runspool.core.runtime:plugin"},
             {"id": "doctor", "plugin": "runspool.core.doctor:plugin"},
+            {"id": "credentials", "plugin": "runspool.core.credentials:plugin"},
         ]
     }
 ]

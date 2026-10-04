@@ -78,6 +78,7 @@ def test_a_01_style_config_boots_every_core_and_builtin_entry(tmp_path):
         "tasks",
         "runtime",
         "doctor",
+        "credentials",
         "builtin-ingest_file",
         "builtin-classify_text",
         "builtin-normalize_markdown",
