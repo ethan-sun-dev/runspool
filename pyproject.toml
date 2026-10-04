@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runspool"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "A local-first CLI workflow engine for reliable personal automation."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -43,6 +43,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
+    # The plugins in this repository, so their tests and the examples run.
+    "runspool-example-creator",
+    "runspool-wechat",
 ]
 
 [project.urls]
@@ -56,6 +59,13 @@ runspool = "runspool.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/runspool"]
+
+[tool.uv.workspace]
+members = ["plugins/*"]
+
+[tool.uv.sources]
+runspool-example-creator = { workspace = true }
+runspool-wechat = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -71,5 +81,5 @@ select = ["E", "F", "I", "UP", "B", "W"]
 "src/runspool/cli.py" = ["B008"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "plugins/*/tests"]
 addopts = "-q"

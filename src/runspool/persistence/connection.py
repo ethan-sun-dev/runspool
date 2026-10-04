@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -57,4 +58,13 @@ def _configure(conn: sqlite3.Connection) -> None:
     # timeout a second opener fails at once with "database is locked". WAL lets
     # readers and a single writer proceed concurrently once it is on.
     conn.execute("pragma busy_timeout = 5000")
-    conn.execute("pragma journal_mode = wal")
+    # Switching an older (rollback-journal) database to WAL needs an exclusive lock and
+    # does not wait on busy_timeout: retry briefly while another opener holds it.
+    for attempt in range(50):
+        try:
+            conn.execute("pragma journal_mode = wal")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or attempt == 49:
+                raise
+            time.sleep(0.1)

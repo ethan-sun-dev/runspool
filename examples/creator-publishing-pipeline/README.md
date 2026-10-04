@@ -14,8 +14,10 @@ Workflow:
 collect_materials -> extract_highlights -> draft_article -> render_platform_package -> create_publish_checklist -> archive
 ```
 
-(The first five steps are custom plugins in [steps/creator_steps.py](steps/creator_steps.py);
-`archive` is built in.)
+(The first five steps come from the
+[runspool-example-creator](../../plugins/runspool-example-creator) plugin package,
+which also contributes the workflow; `archive` is built in. Install it with
+`uv sync --extra dev` from the repository root, or `pip install runspool-example-creator`.)
 
 ## Run it
 
@@ -45,7 +47,9 @@ dist/
 ## Future: optional publish adapters
 
 A natural next step is to add **opt-in** adapter steps that submit a *draft*
-(never an auto-publish) to a platform's API, for example:
+(never an auto-publish) to a platform's API, for example (the official
+[runspool-wechat](../../plugins/runspool-wechat) plugin does this for WeChat, behind
+an approval):
 
 ```
 submit_wechat_draft
