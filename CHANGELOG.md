@@ -6,7 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.2.0] - TBD
+## [0.2.0] - 2026-10-04
 
 RunSpool is now built from plugins on a small kernel. Everything the engine does —
 storage, the state machine, scheduling, the CLI, approvals, credentials, built-in

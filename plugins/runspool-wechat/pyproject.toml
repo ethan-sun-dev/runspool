@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runspool-wechat"
-version = "0.2.0.dev0"
+version = "0.2.0"
 description = "Official RunSpool plugin: lay out Markdown for WeChat Official Accounts and create drafts (behind an approval)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Ethan Sun", email = "ethan@ethansun.dev" }]
 keywords = ["runspool", "wechat", "weixin", "official-account", "markdown"]
 dependencies = [
-    "runspool>=0.2.0.dev0,<0.3",
+    "runspool>=0.2,<0.3",
     "markdown-it-py>=3.0",
 ]
 

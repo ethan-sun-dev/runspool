@@ -321,7 +321,7 @@ wheels = [
 
 [[package]]
 name = "runspool"
-version = "0.2.0.dev0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "packaging" },
@@ -356,7 +356,7 @@ dev = [
 
 [[package]]
 name = "runspool-example-creator"
-version = "0.2.0.dev0"
+version = "0.2.0"
 source = { editable = "plugins/runspool-example-creator" }
 dependencies = [
     { name = "runspool" },
@@ -367,7 +367,7 @@ requires-dist = [{ name = "runspool", editable = "." }]
 
 [[package]]
 name = "runspool-wechat"
-version = "0.2.0.dev0"
+version = "0.2.0"
 source = { editable = "plugins/runspool-wechat" }
 dependencies = [
     { name = "markdown-it-py" },
