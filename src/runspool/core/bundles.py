@@ -23,6 +23,7 @@ CORE = [
             {"id": "doctor", "plugin": "runspool.core.doctor:plugin"},
             {"id": "credentials", "plugin": "runspool.core.credentials:plugin"},
             {"id": "approval", "plugin": "runspool.core.approval:plugin"},
+            {"id": "cli", "plugin": "runspool.core.cli:plugin"},
         ]
     }
 ]

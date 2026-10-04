@@ -52,7 +52,7 @@ Documentation = "https://github.com/ethan-sun-dev/runspool/tree/main/docs"
 Issues = "https://github.com/ethan-sun-dev/runspool/issues"
 
 [project.scripts]
-runspool = "runspool.cli:app"
+runspool = "runspool.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/runspool"]

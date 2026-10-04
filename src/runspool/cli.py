@@ -36,11 +36,11 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-_STATE: dict[str, Path] = {"config_path": Path(DEFAULT_CONFIG_FILENAME)}
+_STATE: dict[str, Any] = {"config_path": Path(DEFAULT_CONFIG_FILENAME), "booted": None}
 
 
 @app.callback()
-def main(
+def root(
     config_path: Path = typer.Option(
         Path(DEFAULT_CONFIG_FILENAME), "--config-path", "-c", help="Path to the config file."
     ),
@@ -49,6 +49,9 @@ def main(
 
 
 def _ctx():
+    booted = _STATE.get("booted")
+    if booted is not None and booted[0] == Path(_STATE["config_path"]):
+        return booted[1]  # booted by main() to collect plugin commands; reuse it
     try:
         return load_context(_STATE["config_path"])
     except KernelError as exc:  # a required plugin failed, or the profile is malformed
@@ -426,5 +429,56 @@ def daemon() -> None:
             ctx.kernel.dispose()  # let plugins release threads, sockets, files
 
 
+def _config_path_from(argv: list[str]) -> Path:
+    for i, arg in enumerate(argv):
+        if arg in ("-c", "--config-path") and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if arg.startswith("--config-path="):
+            return Path(arg.split("=", 1)[1])
+    return Path(DEFAULT_CONFIG_FILENAME)
+
+
+def build_app(config_path: Path | str) -> typer.Typer:
+    """The CLI for a profile: the built-in commands plus those its plugins register.
+
+    Boots the profile (and keeps the context for the command to reuse). If it does
+    not boot, only the built-in commands are offered; the command then reports why.
+    """
+    combined = typer.Typer(help=app.info.help, no_args_is_help=True)
+    combined.registered_callback = app.registered_callback
+    combined.registered_commands = list(app.registered_commands)
+    combined.registered_groups = list(app.registered_groups)
+    path = Path(config_path)
+    _STATE["booted"] = None
+    if not path.exists():
+        return combined
+    try:
+        ctx = load_context(path)
+    except Exception:  # noqa: BLE001 - reported by the command that needs the context
+        return combined
+    _STATE["booted"] = (path, ctx)
+    builtin = {c.name or c.callback.__name__.replace("_", "-") for c in app.registered_commands}
+    for contributed in ctx.service("cli").commands:
+        if contributed.name in builtin:
+            typer.echo(
+                f"warning: plugin {contributed.owner!r} command {contributed.name!r} "
+                "clashes with a built-in command and is ignored",
+                err=True,
+            )
+            continue
+        if isinstance(contributed.command, typer.Typer):
+            combined.add_typer(contributed.command, name=contributed.name)
+        else:
+            combined.command(name=contributed.name)(contributed.command)
+    return combined
+
+
+def main() -> None:
+    """Console entry point: ``runspool``."""
+    import sys
+
+    build_app(_config_path_from(sys.argv[1:]))()
+
+
 if __name__ == "__main__":
-    app()
+    main()
