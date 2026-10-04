@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from runspool.clock import utcnow_plus_text, utcnow_text
+from runspool.engine.gate import asked_value, grant_value
 from runspool.models import TERMINAL_STATUSES, EventType, TaskStatus, WorkflowDef
 from runspool.persistence.event_log import Event, EventLog
 from runspool.persistence.repository import TaskRepository
@@ -74,7 +75,22 @@ class Failed:
     retry_delay_seconds: int = 0
 
 
-Outcome = Succeeded | Deferred | Failed
+@dataclass(frozen=True)
+class Denied:
+    """The gate refused to run the step."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class NeedsApproval:
+    """The step may run only once a human approves this ``attempt``."""
+
+    reason: str
+    attempt: int
+
+
+Outcome = Succeeded | Deferred | Failed | Denied | NeedsApproval
 
 
 class IllegalTransition(Exception):
@@ -257,6 +273,42 @@ class StateMachine:
                     [advanced, Event(EventType.PAUSED, step=nxt.step)],
                 )
             return ({"step": nxt.step, "task_status": TaskStatus.QUEUED, **_UNLOCK}, [advanced])
+
+        if isinstance(outcome, Denied):
+            return (
+                {
+                    "task_status": TaskStatus.MANUAL_REQUIRED,
+                    "last_error": f"not run: {outcome.reason}",
+                    "next_retry_at": None,
+                    "pause_requested": 0,
+                    **_UNLOCK,
+                },
+                [Event(EventType.MANUAL_REQUIRED, step=step, message=f"not run: {outcome.reason}")],
+            )
+
+        if isinstance(outcome, NeedsApproval):
+            if pause:
+                # Not run yet: pause in place; approval is asked again on resume.
+                return (
+                    {"task_status": TaskStatus.PAUSED, "pause_requested": 0, **_UNLOCK},
+                    [Event(EventType.PAUSED, step=step)],
+                )
+            return (
+                {
+                    "task_status": TaskStatus.AWAITING_APPROVAL,
+                    "approval_grant": asked_value(step, outcome.attempt),
+                    "next_retry_at": None,
+                    **_UNLOCK,
+                },
+                [
+                    Event(
+                        EventType.APPROVAL_ASKED,
+                        step=step,
+                        message=outcome.reason,
+                        payload={"attempt": outcome.attempt},
+                    )
+                ],
+            )
 
         if isinstance(outcome, Deferred):
             deferred = Event(EventType.DEFERRED, step=step, message=outcome.reason)
@@ -517,6 +569,52 @@ class StateMachine:
                 )
             fields = {"task_status": TaskStatus.QUEUED, "last_error": None, "next_retry_at": None}
             return fields, [Event(EventType.RETRY, step=task["step"])]
+
+        self._user_action(task_id, decide)
+
+    def approve(self, task_id: int, *, by: str = "cli") -> None:
+        """Grant the step the task is waiting on, for that one attempt, and requeue it."""
+
+        def decide(task):
+            status = task["task_status"]
+            kind, _, rest = (task["approval_grant"] or "").partition(":")
+            if status != TaskStatus.AWAITING_APPROVAL or kind != "asked":
+                raise IllegalTransition(task_id, status, "approve", allowed="awaiting_approval")
+            step, _, attempt = rest.rpartition(":")
+            fields = {
+                "task_status": TaskStatus.QUEUED,
+                "approval_grant": grant_value(step, int(attempt)),
+            }
+            event = Event(
+                EventType.APPROVAL_DECIDED,
+                step=task["step"],
+                message=f"approved by {by}",
+                payload={"outcome": "approved", "by": by, "attempt": int(attempt)},
+            )
+            return fields, [event]
+
+        self._user_action(task_id, decide)
+
+    def reject(self, task_id: int, *, reason: str = "", by: str = "cli") -> None:
+        """Refuse the step; the task needs attention (``retry`` asks again)."""
+
+        def decide(task):
+            status = task["task_status"]
+            if status != TaskStatus.AWAITING_APPROVAL:
+                raise IllegalTransition(task_id, status, "reject", allowed="awaiting_approval")
+            message = f"approval rejected by {by}" + (f": {reason}" if reason else "")
+            fields = {
+                "task_status": TaskStatus.MANUAL_REQUIRED,
+                "approval_grant": None,
+                "last_error": message,
+            }
+            event = Event(
+                EventType.APPROVAL_DECIDED,
+                step=task["step"],
+                message=message,
+                payload={"outcome": "rejected", "by": by, "reason": reason},
+            )
+            return fields, [event]
 
         self._user_action(task_id, decide)
 

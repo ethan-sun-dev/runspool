@@ -48,6 +48,12 @@ class LazyStep(Step):
         assert self._step is not None
         return self._step
 
+    @property
+    def side_effect(self) -> bool:  # type: ignore[override]
+        # Must come from the real step: a lazy proxy answering False would let a step
+        # with side effects skip approval.
+        return bool(getattr(self.resolve(), "side_effect", False))
+
     def when(self, task: dict[str, Any], config: Any) -> bool:
         return self.resolve().when(task, config)
 
@@ -58,6 +64,7 @@ class LazyStep(Step):
 class StepsService:
     def __init__(self) -> None:
         self.registry = StepRegistry()
+        self.guards: list[Callable[[Any], str | None]] = []
 
     def for_context(self, ctx: Any) -> _BoundSteps:
         return _BoundSteps(self, ctx)
@@ -98,6 +105,22 @@ class _BoundSteps:
 
     def resolve_all(self) -> list[tuple[str, Exception]]:
         return self._service.resolve_all()
+
+    @property
+    def guards(self) -> list[Callable[[Any], str | None]]:
+        return list(self._service.guards)
+
+    def guard(self, check: Callable[[Any], str | None]) -> Callable[[], None]:
+        """Add a final check run before every step: return a reason to refuse it,
+        or ``None``. A guard can only refuse, never allow, so the order plugins
+        register in can never turn a refusal into permission."""
+        guards = self._service.guards
+
+        def register() -> Callable[[], None]:
+            guards.append(check)
+            return lambda: guards.remove(check) if check in guards else None
+
+        return self._ctx.effect(register, label="step-guard")
 
     def register_lazy(self, name: str, loader: Callable[[], Step]) -> Callable[[], None]:
         """Reserve ``name`` now; import the step with ``loader()`` on first use."""

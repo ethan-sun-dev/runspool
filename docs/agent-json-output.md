@@ -54,6 +54,8 @@ from `available_actions`, optionally follows `suggested_next_action`, and acts.
 | `current_step` | The step the task is on. |
 | `last_error` | The most recent failure message, or `null`. |
 | `next_retry_at` | For a deferred task waiting on a delay: the UTC time it becomes runnable again (`runspool wake <id>` makes it runnable now). For a `failed` task: when its automatic retry is due. Otherwise `null`. |
+| `parent_task_id` | The task this one was created from (a sub-flow), or `null`. |
+| `metadata` | Free-form data the task was created with (an object; `{}` if none). |
 | `artifacts` | Files produced so far, as paths relative to `workspace_root`. |
 | `available_actions` | The control commands valid for the current status. |
 | `suggested_next_action` | A plain-language recommendation (includes `last_error` when relevant). |
@@ -67,10 +69,15 @@ from `available_actions`, optionally follows `suggested_next_action`, and acts.
 | `paused` | `resume`, `terminate` |
 | `failed` | `retry`, `set-step`, `terminate` |
 | `manual_required` | `retry`, `set-step`, `set-retries`, `terminate` |
+| `awaiting_approval` | `approve`, `reject`, `terminate` |
 | `completed` / `partially_completed` / `terminated` | (none) |
 
 `partially_completed` means every step ran but at least one reported that it could
 not fully do its job; the `note` of its degraded step run says why.
+
+`awaiting_approval` means the next step has side effects outside RunSpool (it
+publishes, uploads, sends) and must be approved by a human first. An automated
+caller should not approve on its own; surface `suggested_next_action` to a person.
 
 ## Other JSON commands
 

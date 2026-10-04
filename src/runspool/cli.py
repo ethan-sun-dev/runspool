@@ -287,6 +287,36 @@ def retry(task_id: int = typer.Argument(...)) -> None:
 
 
 @app.command()
+def approve(task_id: int = typer.Argument(...)) -> None:
+    """Approve the step a task is waiting on (that one attempt), and requeue it."""
+    _guard(
+        lambda: commands.approve_task(_ctx(), task_id, by=_who()),
+        f"Approved task {task_id}",
+    )
+
+
+@app.command()
+def reject(
+    task_id: int = typer.Argument(...),
+    reason: str = typer.Option("", "--reason", help="Why; kept in the task's log."),
+) -> None:
+    """Refuse the step a task is waiting on; the task then needs attention."""
+    _guard(
+        lambda: commands.reject_task(_ctx(), task_id, reason=reason, by=_who()),
+        f"Rejected task {task_id}",
+    )
+
+
+def _who() -> str:
+    import getpass
+
+    try:
+        return f"cli:{getpass.getuser()}"
+    except Exception:  # noqa: BLE001 - no user name is not a reason to fail
+        return "cli"
+
+
+@app.command()
 def wake(task_id: int = typer.Argument(...)) -> None:
     """Run a deferred task now instead of waiting out its delay."""
     _guard(lambda: commands.wake_task(_ctx(), task_id), f"Woke task {task_id}")

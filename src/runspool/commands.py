@@ -85,6 +85,14 @@ def wake_task(ctx: AppContext, task_id: int) -> None:
     _sm(ctx, task_id).wake(task_id)
 
 
+def approve_task(ctx: AppContext, task_id: int, *, by: str = "cli") -> None:
+    _sm(ctx, task_id).approve(task_id, by=by)
+
+
+def reject_task(ctx: AppContext, task_id: int, *, reason: str = "", by: str = "cli") -> None:
+    _sm(ctx, task_id).reject(task_id, reason=reason, by=by)
+
+
 def _require_task(ctx: AppContext, task_id: int) -> dict:
     task = ctx.repo.get_task(task_id)
     if task is None:

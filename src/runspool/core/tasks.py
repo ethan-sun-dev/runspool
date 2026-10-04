@@ -7,7 +7,6 @@ workflow and the public operations on tasks (add, pause, resume, ...), so plugin
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 from runspool import commands
@@ -21,9 +20,11 @@ class TasksService:
     def __init__(self, config: AppConfig, store: Store) -> None:
         self._config = config
         self._store = store
-        # The command functions take an application context; give them exactly the
-        # pieces they use.
-        self._app = SimpleNamespace(
+        # The command functions take an application context. (Imported here: the
+        # app module boots the kernel, which loads this plugin.)
+        from runspool.app import AppContext
+
+        self._app = AppContext(
             config=config, db=store.db, repo=store.repo, log=store.log, step_runs=store.step_runs
         )
 
@@ -59,6 +60,13 @@ class TasksService:
             metadata=metadata,
             parent_task_id=parent,
         )
+
+    def approve(self, task_id: int, *, by: str) -> None:
+        """Approve the step a task is waiting on, for that one attempt."""
+        commands.approve_task(self._app, task_id, by=by)
+
+    def reject(self, task_id: int, *, by: str, reason: str = "") -> None:
+        commands.reject_task(self._app, task_id, reason=reason, by=by)
 
     def children(self, task_id: int) -> list[dict[str, Any]]:
         return self._store.repo.list_children(task_id)

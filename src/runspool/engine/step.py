@@ -62,6 +62,10 @@ class Step(ABC):
     """
 
     name: str
+    # True for a step whose effects leave RunSpool (publishing, uploading, sending a
+    # message, creating a draft on a platform). Such a step runs only after a human
+    # approves that attempt (``runspool approve``); see runspool.engine.gate.
+    side_effect: bool = False
 
     def when(self, task: dict[str, Any], config: Any) -> bool:
         return True

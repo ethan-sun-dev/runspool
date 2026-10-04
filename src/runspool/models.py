@@ -20,6 +20,8 @@ class TaskStatus(StrEnum):
     # Every step ran, but at least one reported it did not fully do its job
     # (StepResult.degraded). Terminal, like COMPLETED.
     PARTIALLY_COMPLETED = "partially_completed"
+    # A step with side effects is waiting for a human to approve or reject it.
+    AWAITING_APPROVAL = "awaiting_approval"
 
 
 # Terminal states never scheduled again.
@@ -47,6 +49,8 @@ class EventType(StrEnum):
     RECLAIMED = "reclaimed"
     DEFERRED = "deferred"
     WOKEN = "woken"
+    APPROVAL_ASKED = "approval_asked"
+    APPROVAL_DECIDED = "approval_decided"
 
 
 @dataclass(frozen=True)

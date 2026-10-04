@@ -10,12 +10,20 @@ from collections.abc import Callable
 from typing import Any
 
 from runspool.clock import utcnow_text
+from runspool.engine.gate import Allow, Ask, Decision, Defer, Deny, GateRequest
 from runspool.engine.registry import StepRegistry
 from runspool.engine.step import StepContext, StepDeferred
 from runspool.models import TaskStatus
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
-from runspool.persistence.state_machine import Deferred, Failed, StateMachine, Succeeded
+from runspool.persistence.state_machine import (
+    Deferred,
+    Denied,
+    Failed,
+    NeedsApproval,
+    StateMachine,
+    Succeeded,
+)
 from runspool.persistence.step_run_log import StepRunLog
 
 # Minimum interval (seconds) between heartbeat/progress writes. High-frequency
@@ -41,6 +49,8 @@ class TaskRunner:
         monotonic: Any = time.monotonic,
         notifier: Callable[[str], None] = _default_notifier,
         heartbeat_interval: float | None = None,
+        gate: Callable[[GateRequest], Decision] | None = None,
+        on_approval_asked: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.repo = repo
         self.log = log
@@ -49,6 +59,10 @@ class TaskRunner:
         self.config = config
         self._monotonic = monotonic
         self._notifier = notifier
+        # Without a gate there is nobody to ask: steps with side effects are refused
+        # (fail closed) rather than run unapproved.
+        self._gate = gate
+        self._on_approval_asked = on_approval_asked
         # Refresh the heartbeat on a timer while a step runs, independent of
         # whether the step cooperatively calls ctx.heartbeat(). Default to a
         # third of the reclaim timeout so a healthy long step is never reclaimed.
@@ -92,6 +106,9 @@ class TaskRunner:
                 self._notify(after, f"{after['task_status']} before step {task['step']} started")
             return
         step = self.registry.get(task["step"])
+        attempt = self.step_runs.count_runs(task_id, task["step"]) + 1
+        if not self._admit(sm, task, step, attempt, claim_token):
+            return
 
         # Heartbeat / progress: throttled centrally. No progress string refreshes
         # the heartbeat only; a string also persists ``progress``.
@@ -113,7 +130,7 @@ class TaskRunner:
             config=self.config,
             should_stop=lambda: self._stop_requested(task_id),
             heartbeat=_heartbeat,
-            attempt=self.step_runs.count_runs(task_id, task["step"]) + 1,
+            attempt=attempt,
         )
         # Clear leftover progress from the previous step so we never show a stale
         # 100% before the next step reports anything.
@@ -173,6 +190,45 @@ class TaskRunner:
         )
         after = sm.finish_step(task_id, Succeeded(result.degraded), token=claim_token)
         self._report_success(task, after, result)
+
+    def _admit(
+        self, sm: StateMachine, task: dict[str, Any], step: Any, attempt: int, token: str | None
+    ) -> bool:
+        """Ask the gate whether the step may run now; resolve the task if not.
+
+        A step refused, deferred or held for approval does not run and records no
+        step run, so the attempt it is approved for is the one that runs next.
+        """
+        request = GateRequest(task, step, attempt)
+        try:
+            if self._gate is not None:
+                decision = self._gate(request)
+            elif getattr(step, "side_effect", False) and not request.granted:
+                decision = Deny("the step has side effects and no approval gate is configured")
+            else:
+                decision = Allow()
+        except Exception as exc:  # noqa: BLE001 - a broken gate fails closed
+            decision = Deny(f"pre-execute gate failed: {type(exc).__name__}: {exc}")
+        if isinstance(decision, Allow):
+            return True
+        if isinstance(decision, Defer):
+            outcome: Any = Deferred(decision.reason, decision.delay_seconds)
+        elif isinstance(decision, Ask):
+            outcome = NeedsApproval(decision.reason, attempt)
+        else:
+            reason = decision.reason if isinstance(decision, Deny) else repr(decision)
+            outcome = Denied(reason)
+        after = sm.finish_step(task["id"], outcome, token=token)
+        if after is None:
+            return False
+        status = after["task_status"]
+        if status == TaskStatus.AWAITING_APPROVAL:
+            self._notify(after, f"step {task['step']} awaits approval: {decision.reason}")
+            if self._on_approval_asked is not None:
+                self._on_approval_asked(after)
+        elif status == TaskStatus.MANUAL_REQUIRED:
+            self._notify(after, f"step {task['step']} not run: {after['last_error']}")
+        return False
 
     def _report_success(
         self, task: dict[str, Any], after: dict[str, Any] | None, result: Any

@@ -79,6 +79,7 @@ def test_a_01_style_config_boots_every_core_and_builtin_entry(tmp_path):
         "runtime",
         "doctor",
         "credentials",
+        "approval",
         "builtin-ingest_file",
         "builtin-classify_text",
         "builtin-normalize_markdown",
@@ -410,3 +411,16 @@ def test_init_reports_a_malformed_existing_profile_cleanly(tmp_path):
     assert result.exit_code == 1
     assert "bundles must be a list" in result.output
     assert "Traceback" not in result.output
+
+
+def test_the_tasks_service_runs_every_user_action(tmp_path):
+    # Regression: the service handed the command functions a context without
+    # state_machine(), so pause/resume/retry/terminate raised AttributeError.
+    ctx = load_context(write_profile(tmp_path, ""))
+    tasks = ctx.service("tasks")
+    tid = tasks.add("in.txt", workflow="local_file")
+    tasks.pause(tid)
+    assert ctx.repo.get_task(tid)["task_status"] == "paused"
+    tasks.resume(tid)
+    tasks.terminate(tid)
+    assert ctx.repo.get_task(tid)["task_status"] == "terminated"

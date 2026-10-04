@@ -43,6 +43,7 @@ _ACTIONS: dict[str, list[str]] = {
     TaskStatus.MANUAL_REQUIRED: ["retry", "set-step", "set-retries", "terminate"],
     TaskStatus.COMPLETED: [],
     TaskStatus.PARTIALLY_COMPLETED: [],
+    TaskStatus.AWAITING_APPROVAL: ["approve", "reject", "terminate"],
     TaskStatus.TERMINATED: [],
 }
 
@@ -104,9 +105,15 @@ def detail_view(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
-def _suggested_next_action(task: dict[str, Any]) -> str:
+def _suggested_next_action(task: dict[str, Any], *, asked: str | None = None) -> str:
     status = task["task_status"]
     tid = task["id"]
+    if status == TaskStatus.AWAITING_APPROVAL:
+        why = f" ({asked})" if asked else ""
+        return (
+            f"Step {task['step']} needs approval before it runs{why}: "
+            f"`runspool approve {tid}` or `runspool reject {tid} --reason ...`."
+        )
     if status == TaskStatus.QUEUED and task.get("next_retry_at"):
         return (
             f"Waiting until {task['next_retry_at']} UTC before trying {task['step']} again; "
@@ -137,6 +144,15 @@ def _suggested_next_action(task: dict[str, Any]) -> str:
     return "No suggested action."
 
 
+def _approval_reason(ctx: AppContext, task: dict[str, Any]) -> str | None:
+    if task["task_status"] != TaskStatus.AWAITING_APPROVAL:
+        return None
+    for event in ctx.log.list_for_task(task["id"], limit=20):  # newest first
+        if event["event_type"] == "approval_asked":
+            return event["message"]
+    return None
+
+
 def inspect_view(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
     """Agent-friendly snapshot: enough state and guidance to decide what to do."""
     status = task["task_status"]
@@ -159,5 +175,5 @@ def inspect_view(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
         "artifacts": list_artifacts(ctx.config, task),
         "next_retry_at": task.get("next_retry_at"),
         "available_actions": available_actions(task),
-        "suggested_next_action": _suggested_next_action(task),
+        "suggested_next_action": _suggested_next_action(task, asked=_approval_reason(ctx, task)),
     }
