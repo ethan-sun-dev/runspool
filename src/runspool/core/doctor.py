@@ -74,15 +74,20 @@ class DoctorService:
         n_workflows = len(config.workflows)
         checks.append(Check("workflows", n_workflows > 0, f"{n_workflows} defined"))
 
-        # Every step referenced by a workflow resolves (built-in or plugin). This
-        # catches typos and broken plugin imports before runtime.
+        # Every step referenced by a workflow resolves (built-in or plugin), and every
+        # lazily registered step imports. This catches typos and broken plugin imports
+        # before runtime.
         problems = self._startup.report().lines()
+        failures = self._steps.resolve_all()
         missing: list[str] = []
         for wf in config.workflows.values():
             for step in wf.steps:
                 if not self._steps.has(step) and step not in missing:
                     missing.append(step)
-        if missing and problems:
+        if failures:
+            detail = "; ".join(f"{name}: {type(exc).__name__}: {exc}" for name, exc in failures)
+            checks.append(Check("steps", False, f"plugin load failed: {detail}"))
+        elif missing and problems:
             checks.append(Check("steps", False, f"plugin load failed: {'; '.join(problems)}"))
         elif missing:
             checks.append(Check("steps", False, f"unregistered steps: {', '.join(missing)}"))
@@ -91,6 +96,10 @@ class DoctorService:
 
         checks.append(
             Check("plugins", not problems, "; ".join(problems) if problems else "all active")
+        )
+        warnings = list(getattr(self._startup, "warnings", []))
+        checks.append(
+            Check("profile", not warnings, "; ".join(warnings) if warnings else "no warnings")
         )
         return checks
 

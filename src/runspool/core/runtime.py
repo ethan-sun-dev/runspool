@@ -26,25 +26,27 @@ class RuntimeService:
         self._startup = startup
 
     def ensure_ready(self) -> None:
-        """Refuse to run when a workflow step is missing because a plugin failed.
+        """Refuse to run the engine on a partially loaded plugin set.
 
-        A missing step with every plugin healthy is left to fail its task at runtime,
-        as before; a missing step explained by a failed plugin stops the run up front.
+        ``run`` and ``daemon`` start only when every enabled plugin is active and every
+        lazily registered step imports cleanly. A failed plugin may have been meant to
+        provide or override a step; running without it could silently run the wrong
+        step. Disable plugins you do not want instead.
         """
-        missing = sorted(
-            {
-                step
-                for wf in self.config.workflows.values()
-                for step in wf.steps
-                if not self.steps.has(step)
-            }
-        )
-        problems = self._startup.report().lines()
-        if missing and problems:
+        report = self._startup.report()
+        problems = report.lines()
+        if problems:
             raise StartupError(
-                f"steps {', '.join(missing)} are unavailable because plugins failed to load:\n  "
-                + "\n  ".join(problems),
-                self._startup.report(),
+                "cannot run: some plugins are not active (fix them, or disable them in the "
+                "profile):\n  " + "\n  ".join(problems),
+                report,
+            )
+        failures = self.steps.resolve_all()
+        if failures:
+            raise StartupError(
+                "cannot run: some steps failed to load:\n  "
+                + "\n  ".join(f"{name}: {type(exc).__name__}: {exc}" for name, exc in failures),
+                report,
             )
 
     def build_coordinator(self, *, notifier: Callable[[str], None] | None = None) -> Coordinator:

@@ -20,7 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from runspool.config import AppConfig
-from runspool.core.bundles import BUILTIN_STEPS, CORE, CORE_IDS, DEFAULT_BUNDLES
+from runspool.core.bundles import (
+    BUILTIN_STEPS,
+    CORE,
+    CORE_SERVICES,
+    DEFAULT_BUNDLES,
+    LOCKED_CORE_IDS,
+)
 from runspool.kernel import (
     BUNDLE_GROUP,
     Composition,
@@ -28,6 +34,7 @@ from runspool.kernel import (
     Layer,
     Loader,
     Profile,
+    StartupError,
     StartupReport,
     compose,
 )
@@ -60,6 +67,17 @@ STATIC_BUNDLES = {
 }
 
 
+class StartupInfo:
+    """The ``startup`` service: the mount report and the profile's warnings."""
+
+    def __init__(self, loader: Loader) -> None:
+        self.loader = loader
+        self.warnings: list[str] = []
+
+    def report(self) -> StartupReport:
+        return self.loader.report()
+
+
 @dataclass
 class Booted:
     kernel: Kernel
@@ -88,22 +106,45 @@ def boot(config_path: Path | str, *, overlays: Iterable[Path] = ()) -> Booted:
     profile, config = load_profile(config_path)
     kernel = Kernel()
     loader = Loader(kernel, allow=profile.allow)
+    startup = StartupInfo(loader)
     kernel.root.provide("config", config)
-    kernel.root.provide("startup", loader)
+    kernel.root.provide("startup", startup)
 
-    bundles = {**discover(BUNDLE_GROUP), **STATIC_BUNDLES}
+    known = set(AppConfig.model_fields) - {"base_dir"}
+    for key in sorted(set(profile.settings) - known):
+        startup.warnings.append(f"unknown setting {key!r} in {profile.path} is ignored")
+
+    discovered = discover(BUNDLE_GROUP)
+    for name in sorted(set(discovered) & set(STATIC_BUNDLES)):
+        startup.warnings.append(f"installed bundle {name!r} is ignored: the name is RunSpool's own")
+    bundles = {**discovered, **STATIC_BUNDLES}
     layers = bundle_layers(profile.bundles or DEFAULT_BUNDLES, bundles)
     layers.append(Layer("boot:config-steps", CONFIG_STEPS_LAYER))
     layers.append(Layer(f"profile:{profile.path}", profile.patch))
     for overlay in overlays:
         layers.append(Layer(f"overlay:{overlay}", load_patch_file(overlay)))
     composition = compose(layers)
-    for warning in composition.warnings:
+    startup.warnings.extend(composition.warnings)
+    for warning in startup.warnings:
         log.warning(warning)
 
-    loader.mount(composition.enabled())
+    # The state machine, step registry, workflows, runtime and doctor are core: they
+    # carry the engine's invariants and cannot be disabled or replaced. (The store is
+    # a seam: it may be replaced, but something must provide it.)
     enabled = {entry.id for entry in composition.enabled()}
-    required = [entry_id for entry_id in CORE_IDS if entry_id in enabled]
+    locked_off = [entry_id for entry_id in LOCKED_CORE_IDS if entry_id not in enabled]
+    if locked_off:
+        raise StartupError(
+            f"core entries {', '.join(locked_off)} are disabled or missing; they cannot be "
+            "turned off (is the 'core' bundle listed in the profile?)",
+            StartupReport([]),
+        )
+
+    loader.mount(composition.enabled())
+    required = list(LOCKED_CORE_IDS)
     required += [entry_id for entry_id in profile.required if entry_id not in required]
     report = loader.audit(required=required)
+    absent = [name for name in CORE_SERVICES if kernel.root.get(name) is None]
+    if absent:
+        raise StartupError(f"no active plugin provides {', '.join(absent)}", report)
     return Booted(kernel, loader, config, profile, composition, report)

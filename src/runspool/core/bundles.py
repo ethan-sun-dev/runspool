@@ -6,7 +6,10 @@ them by id (``{id: builtin-archive, disabled: true}``).
 
 from __future__ import annotations
 
-CORE_IDS = ("store", "steps", "workflows", "tasks", "runtime", "doctor")
+# Services every RunSpool needs. "store" is a seam (replaceable); the rest are core.
+CORE_SERVICES = ("store", "steps", "workflows", "tasks", "runtime", "doctor")
+# Core entries that may not be disabled: they carry the engine's invariants.
+LOCKED_CORE_IDS = ("steps", "workflows", "tasks", "runtime", "doctor")
 
 CORE = [
     {

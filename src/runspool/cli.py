@@ -85,7 +85,10 @@ def init(
     ),
 ) -> None:
     """Generate a config (without overwriting an existing one) and init the database."""
-    created = init_app(_STATE["config_path"], workspace_root=workspace_root)
+    try:
+        created = init_app(_STATE["config_path"], workspace_root=workspace_root)
+    except KernelError as exc:
+        _fail(exc)
     if created:
         typer.echo(f"Created {_STATE['config_path']} and initialised the database.")
     else:
@@ -362,6 +365,8 @@ def daemon() -> None:
         d.run()
     finally:
         pid_file.unlink(missing_ok=True)
+        if ctx.kernel is not None:
+            ctx.kernel.dispose()  # let plugins release threads, sockets, files
 
 
 if __name__ == "__main__":

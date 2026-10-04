@@ -1,25 +1,35 @@
 """The ``store`` seam contract. Every store implementation must pass it.
 
-Use it from your plugin's tests by subclassing and providing a ``store`` fixture
-that returns a fresh, empty store::
+Use it from your plugin's tests by subclassing and implementing ``open_store``,
+which opens the store kept at ``location`` (an empty directory the first time).
+It must be a classmethod or staticmethod on an importable class: the cross-process
+test calls it again in other processes to open the *same* store::
 
     from runspool.testing import StoreContract
 
     class TestMyStore(StoreContract):
-        @pytest.fixture
-        def store(self, tmp_path):
-            return MyStore(tmp_path)
+        @classmethod
+        def open_store(cls, location):
+            return MyStore(location)
 
 The contract covers what the state machine and scheduler rely on: atomic claiming
-(exactly one winner, even across threads), the update allow-list, ordering of
-listings and events, active-task lookup, and step-run bookkeeping.
+(exactly one winner, across threads and across processes, which is how the daemon
+and a CLI ``run --force`` race), the fields a claim sets, the update allow-list,
+the scheduling order of queued tasks, due retries, stale-heartbeat detection,
+ordering of events, active-task lookup, and step-run bookkeeping.
 """
 
 from __future__ import annotations
 
+import importlib
+import multiprocessing
 import threading
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from runspool.clock import utcnow_text
 from runspool.models import TaskStatus
 
 NOW = "2026-01-01 00:00:00"
@@ -29,7 +39,24 @@ def _add(store: Any, input: str = "in", **kw: Any) -> int:
     return store.repo.create_task(input=input, workflow="wf", first_step="a", max_retries=3, **kw)
 
 
+def _claim_in_another_process(
+    module: str, qualname: str, location: str, task_id: int, worker: str
+) -> bool:
+    cls: Any = importlib.import_module(module)
+    for part in qualname.split("."):
+        cls = getattr(cls, part)
+    return cls.open_store(Path(location)).repo.claim_queued(task_id, worker=worker, now=NOW)
+
+
 class StoreContract:
+    @classmethod
+    def open_store(cls, location: Path) -> Any:
+        raise NotImplementedError("implement open_store(location) in your contract subclass")
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        return self.open_store(tmp_path)
+
     def test_create_then_get(self, store):
         task_id = _add(store, "x.txt", name="X")
         task = store.repo.get_task(task_id)
@@ -52,7 +79,7 @@ class StoreContract:
         assert store.repo.claim_queued(task_id, worker="w2", now=NOW) is False
         task = store.repo.get_task(task_id)
         assert task["task_status"] == TaskStatus.RUNNING
-        assert task["locked_by"] == "w1"
+        assert (task["locked_by"], task["locked_at"], task["heartbeat_at"]) == ("w1", NOW, NOW)
 
     def test_concurrent_claims_have_exactly_one_winner(self, store):
         task_id = _add(store)
@@ -68,11 +95,21 @@ class StoreContract:
             thread.start()
         for thread in threads:
             thread.join()
+        assert len(results) == 8, "a claiming thread raised instead of returning"
+        assert results.count(True) == 1
+
+    def test_concurrent_claims_across_processes_have_exactly_one_winner(self, tmp_path):
+        store = self.open_store(tmp_path)
+        task_id = _add(store)
+        cls = type(self)
+        args = [
+            (cls.__module__, cls.__qualname__, str(tmp_path), task_id, f"p{n}") for n in range(4)
+        ]
+        with multiprocessing.get_context("spawn").Pool(4) as pool:
+            results = pool.starmap(_claim_in_another_process, args)
         assert results.count(True) == 1
 
     def test_update_fields_is_allow_listed(self, store):
-        import pytest
-
         task_id = _add(store)
         store.repo.update_fields(task_id, {"priority": 5, "last_error": "boom"})
         task = store.repo.get_task(task_id)
@@ -87,6 +124,27 @@ class StoreContract:
         assert [t["id"] for t in store.repo.list_all()] == [first, second]
         assert [t["id"] for t in store.repo.list_by_status(TaskStatus.QUEUED)] == [first]
         assert [t["id"] for t in store.repo.list_by_status(TaskStatus.PAUSED)] == [second]
+
+    def test_queued_tasks_are_listed_by_priority_then_first_in(self, store):
+        first, second, urgent = _add(store, "a"), _add(store, "b"), _add(store, "c")
+        store.repo.update_fields(urgent, {"priority": 5})
+        queued = [t["id"] for t in store.repo.list_by_status(TaskStatus.QUEUED)]
+        assert queued == [urgent, first, second]
+
+    def test_due_failed_respects_next_retry_at(self, store):
+        later, due, unset = _add(store, "a"), _add(store, "b"), _add(store, "c")
+        for task_id, when in ((later, "2999-01-01 00:00:00"), (due, "2000-01-01 00:00:00")):
+            store.repo.update_fields(
+                task_id, {"task_status": TaskStatus.FAILED, "next_retry_at": when}
+            )
+        store.repo.update_fields(unset, {"task_status": TaskStatus.FAILED})
+        assert sorted(t["id"] for t in store.repo.list_due_failed()) == [due, unset]
+
+    def test_stale_running_uses_the_heartbeat(self, store):
+        stale, fresh = _add(store, "a"), _add(store, "b")
+        store.repo.claim_queued(stale, worker="w", now="2000-01-01 00:00:00")
+        store.repo.claim_queued(fresh, worker="w", now=utcnow_text())
+        assert [t["id"] for t in store.repo.list_stale_running(60)] == [stale]
 
     def test_find_active_ignores_terminal_tasks(self, store):
         done = _add(store, "same")
