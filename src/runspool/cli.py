@@ -20,6 +20,7 @@ from runspool.display import (
     format_task_list,
 )
 from runspool.doctor import run_doctor
+from runspool.kernel import KernelError
 from runspool.persistence.state_machine import IllegalTransition
 from runspool.runtime import (
     build_daemon,
@@ -48,7 +49,15 @@ def main(
 
 
 def _ctx():
-    return load_context(_STATE["config_path"])
+    try:
+        return load_context(_STATE["config_path"])
+    except KernelError as exc:  # a required plugin failed, or the profile is malformed
+        _fail(exc)
+
+
+def _fail(exc: Exception):
+    typer.echo(f"error: {exc}", err=True)
+    raise typer.Exit(1) from exc
 
 
 def _emit_json(obj: Any) -> None:
@@ -118,7 +127,10 @@ def run(
     # In JSON mode, keep stdout a single clean JSON document by silencing the
     # per-step notifier entirely (default would otherwise print to stderr).
     notifier = (lambda m: None) if json_output else (lambda m: typer.echo(m))
-    rounds = run_until_idle(ctx, notifier=notifier)
+    try:
+        rounds = run_until_idle(ctx, notifier=notifier)
+    except KernelError as exc:  # steps unavailable because a plugin failed to load
+        _fail(exc)
     if json_output:
         _emit_json({"rounds": rounds, "tasks": list_view(ctx.repo.list_all())})
     else:
@@ -333,7 +345,10 @@ def daemon() -> None:
     if daemon_status(ctx)["running"]:
         typer.echo("daemon already running; not starting another")
         raise typer.Exit(1)
-    d = build_daemon(ctx)
+    try:
+        d = build_daemon(ctx)
+    except KernelError as exc:
+        _fail(exc)
     pid_file = daemon_pid_file(ctx)
     write_pid(pid_file, os.getpid())
 

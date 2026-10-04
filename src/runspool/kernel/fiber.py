@@ -339,6 +339,11 @@ class Context:
     one that this plugin or one of its (non-root) ancestors provides. Anything else
     raises :class:`ServiceNotInjected`, so a plugin cannot reach a service it did
     not declare. Use :meth:`get` for an optional dependency.
+
+    A service object with a ``for_context(ctx)`` method is *context-bound*: each
+    plugin receives ``service.for_context(its_ctx)`` instead of the shared object.
+    That is how ``ctx.steps.register(step)`` can record the registration as an
+    effect of the calling plugin, undone automatically when it unloads.
     """
 
     __slots__ = ("_kernel", "fiber")
@@ -354,12 +359,12 @@ class Context:
         if name.startswith("_"):
             raise AttributeError(name)
         if name in self.fiber._store:
-            return self.fiber._store[name]
+            return self._bind(self.fiber._store[name])
         impl = self._kernel._impls.get(name)
         if impl is not None:
             for fiber in self.fiber.ancestors():
                 if impl.fiber is fiber:
-                    return impl.value
+                    return self._bind(impl.value)
                 if fiber.parent is self._kernel.root_fiber:
                     break  # the root's services must be injected like anyone else's
         raise ServiceNotInjected(
@@ -382,7 +387,11 @@ class Context:
         """Return a service if it is usable right now, else ``None``. No inject needed."""
         if not self._kernel._usable(name, self.fiber):
             return None
-        return self._kernel._impls[name].value
+        return self._bind(self._kernel._impls[name].value)
+
+    def _bind(self, value: Any) -> Any:
+        binder = getattr(value, "for_context", None)
+        return binder(self) if callable(binder) else value
 
     def effect(self, body: Callable[[], Any], label: str = "effect") -> Disposer:
         return self.fiber.effect(body, label)

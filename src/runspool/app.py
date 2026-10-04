@@ -1,11 +1,14 @@
-"""Application context: assembles config and persistence for the CLI and daemon."""
+"""Application context: a booted kernel plus the handles the CLI and daemon use."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from runspool.config import AppConfig
+from runspool.core.boot import boot
+from runspool.kernel import Kernel
 from runspool.persistence.connection import Database
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
@@ -22,21 +25,31 @@ class AppContext:
     repo: TaskRepository
     log: EventLog
     step_runs: StepRunLog
+    kernel: Kernel | None = None
 
     def state_machine(self, workflow_name: str) -> StateMachine:
         return StateMachine(self.repo, self.log, workflow=self.config.workflow(workflow_name))
 
+    def service(self, name: str) -> Any:
+        """A service of the booted kernel, as the root sees it."""
+        if self.kernel is None:
+            raise LookupError("this context has no kernel")
+        value = self.kernel.root.get(name)
+        if value is None:
+            raise LookupError(f"service {name!r} is not available")
+        return value
+
 
 def load_context(config_path: Path | str) -> AppContext:
-    config = AppConfig.load(Path(config_path))
-    db = Database(config.database_path)
-    db.init()
+    booted = boot(Path(config_path))
+    store = booted.service("store")
     return AppContext(
-        config=config,
-        db=db,
-        repo=TaskRepository(db),
-        log=EventLog(db),
-        step_runs=StepRunLog(db),
+        config=booted.config,
+        db=store.db,
+        repo=store.repo,
+        log=store.log,
+        step_runs=store.step_runs,
+        kernel=booted.kernel,
     )
 
 

@@ -374,3 +374,39 @@ def test_kernel_dispose_unloads_everything_newest_first():
     kernel.dispose()
     assert log == ["load a", "load b", "unload b", "unload a"]
     assert kernel.fibers == []
+
+
+def test_context_bound_service_gives_each_plugin_its_own_view():
+    kernel = Kernel()
+    registry: list[str] = []
+
+    class Steps:
+        def for_context(self, ctx):
+            outer = self
+
+            class View:
+                def register(self, name):
+                    return ctx.effect(
+                        lambda: (registry.append(name), lambda: registry.remove(name))[1]
+                    )
+
+                owner = ctx.fiber.name
+                shared = outer
+
+            return View()
+
+    kernel.root.plugin(
+        Plugin(name="steps", apply=lambda ctx, config: ctx.provide("steps", Steps()))
+    )
+    views = []
+
+    def contributor(ctx, config):
+        views.append(ctx.steps)
+        ctx.steps.register("greet")
+
+    fiber = kernel.root.plugin(Plugin(name="greeter", apply=contributor, inject=["steps"]))
+    assert registry == ["greet"]
+    assert views[0].owner == "greeter"
+    assert kernel.root.get("steps").owner == "root"
+    fiber.dispose()
+    assert registry == []  # the registration was an effect of the contributor
