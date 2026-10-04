@@ -26,6 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import mdurl
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
@@ -129,7 +130,9 @@ def render(
             if token.type == "heading_open":
                 key = token.tag if token.tag in ("h1", "h2", "h3") else "h4"
             if key:
-                token.attrSet("style", styles["blockquote_p" if key == "p" and depth else key])
+                style = styles["blockquote_p" if key == "p" and depth else key]
+                # Keep what markdown-it set (a table cell's text-align), add ours after.
+                token.attrSet("style", (token.attrGet("style") or "") + style)
             for child in token.children or []:
                 inline_key = _INLINE_STYLE.get(child.type)
                 if inline_key:
@@ -141,9 +144,10 @@ def render(
         return leaf(tokens[idx].content)
 
     def softbreak(self, tokens, idx, options, env):
-        # Between two Latin words keep a space; between CJK characters, nothing.
-        before = tokens[idx - 1].content if idx > 0 else ""
-        after = tokens[idx + 1].content if idx + 1 < len(tokens) else ""
+        # Between two Latin words keep a space; between CJK characters, nothing. Look
+        # past markup tokens (``**``, link ends) to the nearest text on each side.
+        before = next((t.content for t in reversed(tokens[:idx]) if t.content), "")
+        after = next((t.content for t in tokens[idx + 1 :] if t.content), "")
         latin = re.search(r"[A-Za-z0-9]$", before) and re.match(r"^[A-Za-z0-9]", after)
         return leaf(" ") if latin else ""
 
@@ -221,7 +225,7 @@ def render(
     inner = re.sub(r">\s*\n\s*<", "><", md.render(markdown, env)).strip()
     if result.external_links:
         items = "".join(
-            f"<li>{leaf((label + ': ' if label and label != url else '') + url)}</li>"
+            f"<li>{leaf((label + ': ' if label and label != url else '') + mdurl.decode(url))}</li>"
             for label, url in result.external_links
         )
         inner += (

@@ -24,12 +24,13 @@ from runspool.kernel.loader import (
     check_compat,
     compose_profile,
 )
-from runspool.kernel.plugin import Plugin
+from runspool.kernel.plugin import ConfigError, Plugin
 
 __all__ = [
     "BUNDLE_GROUP",
     "PLUGIN_GROUP",
     "ComposeError",
+    "ConfigError",
     "Composition",
     "Context",
     "Entry",

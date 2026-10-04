@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib import request as urlrequest
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 BASE = "https://api.weixin.qq.com/cgi-bin"
 
@@ -134,9 +134,15 @@ def urllib_transport(api: str, method: str, url: str, body: Any, files: Path | N
     else:
         payload = None
     req = urlrequest.Request(url, data=payload, headers=headers, method=method)
+    # The URL carries the access token: errors name the API, never the URL.
     try:
         with urlrequest.urlopen(req, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except URLError as exc:
-        # The URL carries the access token: report the API name, not the URL.
+            raw = response.read()
+    except HTTPError as exc:
+        raise WeChatError(api, f"HTTP {exc.code}") from None
+    except (URLError, TimeoutError, OSError) as exc:
         raise WeChatError(api, f"cannot reach the API ({type(exc).__name__})") from None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        raise WeChatError(api, "the API returned something that is not JSON") from None

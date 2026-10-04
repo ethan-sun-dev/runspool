@@ -17,13 +17,16 @@ from urllib.parse import unquote
 
 from runspool.builtin_steps.workspace import task_workspace
 from runspool.engine.step import Step, StepContext, StepResult
-from runspool_wechat.api import WeChatClient
+from runspool_wechat.api import WeChatClient, WeChatError
 from runspool_wechat.article import Article, load_article
 from runspool_wechat.render import render
 
 TITLE_MAX = 32  # characters, per the draft API
 DIGEST_MAX = 120
 IMAGE_MAX_BYTES = 1024 * 1024  # media/uploadimg accepts jpg/png under 1 MB
+COVER_MAX_BYTES = 10 * 1024 * 1024  # permanent image material
+COVER_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".bmp")
+DRAFT_GONE = 40007  # invalid media_id: the draft (or material) no longer exists
 COVER_NAMES = ("cover.png", "cover.jpg", "cover.jpeg", "images/cover.png", "images/cover.jpg")
 
 
@@ -43,12 +46,60 @@ def article_problems(article: Article) -> list[str]:
     return problems
 
 
-def recorded_problems(config: Any, task: Any) -> list[str]:
-    """The problems ``wechat_render`` recorded for this task's article, if any."""
+def rendered_summary(config: Any, task: Any) -> dict[str, Any] | None:
+    """What ``wechat_render`` recorded for this task's article, if it ran."""
     path = task_workspace(config, dict(task)) / "wechat" / "article.json"
     if not path.exists():
-        return []
-    return list(json.loads(path.read_text(encoding="utf-8")).get("problems", []))
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def source_digest(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def find_cover(article: Article) -> Path | None:
+    candidates = [article.cover] if article.cover else list(COVER_NAMES)
+    for name in candidates:
+        path = (article.base_dir / unquote(name)).resolve()
+        if path.is_file():
+            return path
+    return None
+
+
+def plan_uploads(article: Article, images: list[str]) -> tuple[list[Path], list[str]]:
+    """The local files a draft would send to WeChat, and why any of them may not go.
+
+    Only files inside the article's directory may be uploaded: the article decides
+    what leaves this machine, and a path like ``../../secret.png`` should not.
+    """
+    files: list[Path] = []
+    blocked: list[str] = []
+    for src in dict.fromkeys(images):
+        path = local_image(src, article.base_dir)
+        if path is None:
+            continue
+        if not path.is_relative_to(article.base_dir):
+            blocked.append(f"{src}: outside the article's directory")
+            continue
+        problem = _upload_problem(path, IMAGE_MAX_BYTES, (".jpg", ".jpeg", ".png"))
+        if problem:
+            blocked.append(problem)
+        files.append(path)
+    cover = find_cover(article)
+    if cover is None:
+        blocked.append(
+            "no cover image: set `cover:` in the front matter, or put cover.png next to "
+            "the article (2.35:1, e.g. 900x383)"
+        )
+    elif not cover.is_relative_to(article.base_dir):
+        blocked.append(f"cover {article.cover}: outside the article's directory")
+    else:
+        problem = _upload_problem(cover, COVER_MAX_BYTES, COVER_SUFFIXES)
+        if problem:
+            blocked.append(f"cover {problem}")
+        files.append(cover)
+    return files, blocked
 
 
 def local_image(src: str, base_dir: Path) -> Path | None:
@@ -99,6 +150,7 @@ class WeChatRenderStep(Step):
             references_label=self._settings.references_label,
         )
         problems = article_problems(article)
+        uploads, blocked = plan_uploads(article, rendered.images)
         (out / "preview.html").write_text(
             preview_page(article, rendered.html, problems), encoding="utf-8"
         )
@@ -106,7 +158,10 @@ class WeChatRenderStep(Step):
             "source": str(article.source_path),
             "title": article.title,
             "digest": article.digest,
+            "source_sha256": source_digest(article.source_path),
             "images": rendered.images,
+            "uploads": [str(p.relative_to(article.base_dir)) for p in uploads],
+            "blocked": blocked,
             "external_links": len(rendered.external_links),
             "problems": problems,
         }
@@ -114,8 +169,9 @@ class WeChatRenderStep(Step):
             json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         updates = {} if ctx.task.get("name") else {"name": article.title}
-        if problems:
-            return StepResult(message="; ".join(problems), updates=updates, degraded=True)
+        if problems or blocked:
+            notes = problems + blocked
+            return StepResult(message="; ".join(notes), updates=updates, degraded=True)
         return StepResult(message=f"rendered {article.title!r}", updates=updates)
 
 
@@ -130,22 +186,19 @@ class WeChatDraftStep(Step):
     def run(self, ctx: StepContext) -> StepResult:
         out = task_workspace(ctx.config, ctx.task) / "wechat"
         summary = json.loads((out / "article.json").read_text(encoding="utf-8"))
-        if summary["problems"] and not self._settings.allow_problems:
-            raise RuntimeError(
-                "article has problems (set allow_problems to draft anyway): "
-                + "; ".join(summary["problems"])
-            )
+        refusal = draft_refusal(summary, self._settings)
+        if refusal:
+            raise RuntimeError(refusal)
         article = load_article(summary["source"])
-        client = make_client(*self._account())
+        appid, secret = self._account()
+        client = make_client(appid, secret)
         cache_path = out / "upload-cache.json"
-        cache = (
-            json.loads(cache_path.read_text(encoding="utf-8"))
-            if cache_path.exists()
-            else {"images": {}, "covers": {}}
-        )
+        caches = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+        # Uploaded URLs and media ids belong to one account: keyed by appid.
+        cache = caches.setdefault(appid, {"images": {}, "covers": {}})
 
         def save_cache() -> None:
-            cache_path.write_text(json.dumps(cache, indent=2) + "\n", encoding="utf-8")
+            cache_path.write_text(json.dumps(caches, indent=2) + "\n", encoding="utf-8")
 
         urls: dict[str, str] = {}
         for src in dict.fromkeys(summary["images"]):
@@ -154,13 +207,13 @@ class WeChatDraftStep(Step):
                 continue  # remote images are left as they are
             key = _digest(path)
             if key not in cache["images"]:
-                _check_uploadable(path)
                 ctx.heartbeat(f"uploading {path.name}")
                 cache["images"][key] = client.upload_content_image(path)
                 save_cache()
             urls[src] = cache["images"][key]
 
-        cover = self._cover(article)
+        cover = find_cover(article)
+        assert cover is not None  # draft_refusal checked it
         cover_key = _digest(cover)
         if cover_key not in cache["covers"]:
             ctx.heartbeat("uploading the cover")
@@ -184,12 +237,25 @@ class WeChatDraftStep(Step):
         }
         metadata = dict(ctx.task.get("metadata") or {})
         media_id = metadata.get("wechat_media_id")
+        verb = "created"
         if media_id:
-            client.update_draft(media_id, draft)
-            verb = "updated"
-        else:
-            media_id = client.add_draft(draft)
-            verb = "created"
+            try:
+                client.update_draft(media_id, draft)
+                verb = "updated"
+            except WeChatError as exc:
+                if exc.errcode != DRAFT_GONE:
+                    raise
+                media_id = None  # deleted in the back end: save a new draft instead
+        if not media_id:
+            try:
+                media_id = client.add_draft(draft)
+            except WeChatError as exc:
+                if exc.errcode == DRAFT_GONE:
+                    # The cached cover was deleted from the material library: forget it,
+                    # so the retry uploads it again.
+                    cache["covers"].pop(cover_key, None)
+                    save_cache()
+                raise
         metadata["wechat_media_id"] = media_id
         (out / "draft.json").write_text(
             json.dumps({"media_id": media_id, "title": article.title}, ensure_ascii=False) + "\n",
@@ -219,26 +285,36 @@ class WeChatDraftStep(Step):
             raise RuntimeError(f"WeChat credentials not configured: {', '.join(missing)}")
         return appid, secret
 
-    def _cover(self, article: Article) -> Path:
-        candidates = [article.cover] if article.cover else list(COVER_NAMES)
-        for name in candidates:
-            path = (article.base_dir / name).resolve()
-            if path.is_file():
-                return path
-        raise RuntimeError(
-            "no cover image: set `cover:` in the front matter, or put cover.png next to "
-            "the article (2.35:1, e.g. 900x383)"
-        )
-
 
 def _digest(path: Path) -> str:
     return hashlib.sha1(path.read_bytes()).hexdigest()
 
 
-def _check_uploadable(path: Path) -> None:
+def _upload_problem(path: Path, max_bytes: int, suffixes: tuple[str, ...]) -> str | None:
     if not path.is_file():
-        raise RuntimeError(f"image not found: {path}")
-    if path.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-        raise RuntimeError(f"{path.name}: WeChat body images must be jpg or png")
-    if path.stat().st_size >= IMAGE_MAX_BYTES:
-        raise RuntimeError(f"{path.name}: WeChat body images must be under 1 MB")
+        return f"{path.name}: not found"
+    if path.suffix.lower() not in suffixes:
+        return f"{path.name}: WeChat accepts {', '.join(suffixes)} here"
+    if path.stat().st_size >= max_bytes:
+        return f"{path.name}: larger than {max_bytes // (1024 * 1024)} MB"
+    return None
+
+
+def draft_refusal(summary: dict[str, Any], settings: Any) -> str | None:
+    """Why the article as rendered must not be drafted now, if it must not."""
+    try:
+        current = source_digest(Path(summary["source"]))
+    except OSError:
+        return "the article is gone since it was rendered"
+    if current != summary.get("source_sha256"):
+        return (
+            "the article changed since it was rendered; render it again "
+            "(runspool set-step <id> wechat_render, then retry)"
+        )
+    if summary.get("blocked"):
+        return "cannot upload: " + "; ".join(summary["blocked"])
+    if summary.get("problems") and not settings.allow_problems:
+        return "article has problems (set allow_problems to draft anyway): " + "; ".join(
+            summary["problems"]
+        )
+    return None

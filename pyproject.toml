@@ -39,7 +39,9 @@ dependencies = [
     "packaging>=23",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
+# Development only (PEP 735): never part of the published package's metadata.
+# `uv sync` installs this group by default.
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
@@ -59,6 +61,9 @@ runspool = "runspool.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/runspool"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["plugins/", "uv.lock"]
 
 [tool.uv.workspace]
 members = ["plugins/*"]

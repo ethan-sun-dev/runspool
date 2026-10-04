@@ -178,3 +178,94 @@ def test_the_commands(setup):
     )
     assert preview.exit_code == 0, preview.output
     assert "A short title" in out.read_text(encoding="utf-8")
+
+
+# -- regressions from the M5 review ---------------------------------------------------
+
+
+def test_an_article_edited_after_rendering_is_not_drafted(setup):
+    ctx, article, _ = setup
+    tasks = ctx.service("tasks")
+    tid = tasks.add(str(article), workflow="wechat_article")
+    run(ctx)  # rendered, awaiting approval
+    article.write_text("# " + "长" * 40 + "\n\n![n](img/new.png)\n", encoding="utf-8")
+    tasks.approve(tid, by="ethan")
+    run(ctx)
+    task = ctx.repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert "changed since it was rendered" in task["last_error"]
+    assert all(not c.drafts for c in FakeClient.instances)
+
+
+def test_the_approval_request_lists_the_files_to_upload(setup):
+    ctx, article, _ = setup
+    tid = ctx.service("tasks").add(str(article), workflow="wechat_article")
+    run(ctx)
+    asked = next(e for e in ctx.log.list_for_task(tid) if e["event_type"] == "approval_asked")
+    assert "chart.png" in asked["message"] and "cover.png" in asked["message"]
+
+
+def test_a_draft_deleted_in_the_back_end_is_recreated(setup):
+    from runspool_wechat.api import WeChatError
+
+    ctx, article, _ = setup
+
+    def gone(self, media_id, draft):
+        raise WeChatError("draft/update", "error 40007: invalid media_id", errcode=40007)
+
+    FakeClient.update_draft, real = gone, FakeClient.update_draft
+    try:
+        tasks = ctx.service("tasks")
+        tid = tasks.add(
+            str(article), workflow="wechat_article", metadata={"wechat_media_id": "GONE"}
+        )
+        run(ctx)
+        tasks.approve(tid, by="ethan")
+        run(ctx)
+    finally:
+        FakeClient.update_draft = real
+    task = ctx.repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.COMPLETED
+    assert task["metadata"]["wechat_media_id"] == "DRAFT-1"
+
+
+def test_uploads_stay_inside_the_article_directory(setup):
+    ctx, article, _ = setup
+    (article.parent.parent / "secret.png").write_bytes(PNG)
+    article.write_text("# Title\n\n![x](../secret.png)\n", encoding="utf-8")
+    tasks = ctx.service("tasks")
+    tid = tasks.add(str(article), workflow="wechat_article")
+    run(ctx)
+    task = ctx.repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert "outside the article's directory" in task["last_error"]
+
+
+def test_a_secret_pasted_as_a_credential_name_is_refused_and_never_echoed(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    secret = "abcdef0123456789abcdef0123456789"
+    profile = tmp_path / "runspool.yaml"
+    profile.write_text(
+        f"workspace_root: {tmp_path / 'ws'}\nbundles: [core, builtin-steps, wechat]\n"
+        f"patch:\n  - id: wechat\n    config: {{appsecret: {secret}}}\n",
+        encoding="utf-8",
+    )
+    ctx = load_context(profile)
+    report = " ".join(ctx.service("startup").report().lines())
+    assert "appsecret" in report and secret not in report
+
+
+def test_preview_reports_errors_cleanly(setup, tmp_path):
+    ctx, article, profile = setup
+    cli = CliRunner()
+    missing = cli.invoke(
+        build_app(profile), ["-c", str(profile), "wechat", "preview", str(tmp_path / "nope.md")]
+    )
+    assert missing.exit_code == 1 and "Traceback" not in missing.output
+    assert "error:" in missing.output
+    nested = tmp_path / "a" / "b" / "out.html"
+    ok = cli.invoke(
+        build_app(profile),
+        ["-c", str(profile), "wechat", "preview", str(article), "-o", str(nested)],
+    )
+    assert ok.exit_code == 0 and nested.exists()

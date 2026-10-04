@@ -85,3 +85,24 @@ def test_images_are_resolved_and_captioned():
 
 def test_theme_overrides_apply():
     assert "color:red" in render("text", theme={"p": "color:red;"}).html
+
+
+def test_a_soft_break_after_inline_markup_keeps_the_space():
+    assert leaf(" ") in render("Hello **world**\nagain").html
+    r = render("see [docs](https://example.com)\nnow")
+    assert '<span leaf=""> </span><span leaf="">now</span>' in r.html
+
+
+def test_table_alignment_survives_styling():
+    html = render("| a | b |\n|:-:|--:|\n| 1 | 2 |\n").html
+    assert "text-align:center" in html and "text-align:right" in html
+
+
+def test_references_show_readable_urls():
+    r = render("[中文](https://example.com/中文)")
+    assert "https://example.com/中文" in r.html
+
+
+def test_bad_front_matter_is_an_article_error():
+    with pytest.raises(ArticleError):
+        parse_article("---\ntitle: [unclosed\n---\n# T\n", Path("/x/a.md"))

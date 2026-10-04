@@ -100,3 +100,24 @@ def test_boot_provides_credentials_and_reads_the_profile_dotenv(tmp_path, monkey
     assert creds.resolve("PROFILE_ONLY_TOKEN") == "abc"
     names = {c.name for c in ctx.service("doctor").run()}
     assert "credentials file" in names
+
+
+def test_credential_names_follow_the_environment_variable_convention():
+    class Config(BaseModel):
+        appsecret: CredentialRef
+
+    with pytest.raises(ValidationError):
+        Config(appsecret="abcdef0123456789abcdef0123456789")  # a pasted secret, not a name
+
+
+def test_plugin_config_errors_never_echo_the_input():
+    from runspool.kernel import Kernel, Plugin
+
+    class Config(BaseModel):
+        appsecret: CredentialRef
+
+    fiber = Kernel().root.plugin(
+        Plugin(name="p", apply=lambda c, k: None, Config=Config), {"appsecret": "0bcdef-secret-x"}
+    )
+    assert "appsecret" in str(fiber.error)
+    assert "0bcdef-secret-x" not in str(fiber.error)

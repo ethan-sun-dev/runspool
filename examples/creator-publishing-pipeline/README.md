@@ -17,7 +17,7 @@ collect_materials -> extract_highlights -> draft_article -> render_platform_pack
 (The first five steps come from the
 [runspool-example-creator](../../plugins/runspool-example-creator) plugin package,
 which also contributes the workflow; `archive` is built in. Install it with
-`uv sync --extra dev` from the repository root, or `pip install runspool-example-creator`.)
+`uv sync` from the repository root, or `pip install runspool-example-creator`.)
 
 ## Run it
 

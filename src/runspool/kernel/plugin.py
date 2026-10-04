@@ -76,12 +76,27 @@ def normalize(obj: Any) -> PluginSpec:
     )
 
 
+class ConfigError(ValueError):
+    """A plugin's config is invalid. The message names fields, never their values:
+    a config may hold a secret pasted where a name belongs."""
+
+
 def validate_config(model: Any, raw: Any) -> Any:
     """Validate ``raw`` against ``model`` (pydantic or any callable); pass through if no model."""
     if model is None:
         return raw
     if hasattr(model, "model_validate"):
-        return model.model_validate({} if raw is None else raw)
+        try:
+            return model.model_validate({} if raw is None else raw)
+        except Exception as exc:
+            errors = getattr(exc, "errors", None)
+            if not callable(errors):
+                raise
+            details = "; ".join(
+                f"{'.'.join(str(p) for p in e.get('loc', ())) or '(config)'}: {e.get('msg')}"
+                for e in errors(include_input=False, include_url=False)
+            )
+            raise ConfigError(f"invalid config: {details}") from None
     return model(raw)
 
 

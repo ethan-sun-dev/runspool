@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from runspool.app import AppContext
@@ -29,6 +30,11 @@ def add_task(
     parent_task_id: int | None = None,
 ) -> int:
     wf = ctx.config.workflow(workflow)  # unknown workflow raises KeyError
+    candidate = Path(input).expanduser()
+    if candidate.exists():
+        # Store an existing file or directory absolutely, so steps find it whichever
+        # directory the daemon or a later `run` starts in.
+        input = str(candidate.resolve())
     if parent_task_id is not None and ctx.repo.get_task(parent_task_id) is None:
         raise KeyError(parent_task_id)
     if not force:

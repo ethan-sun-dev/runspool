@@ -65,7 +65,10 @@ def parse_article(source: str, source_path: Path) -> Article:
     front: dict = {}
     match = _FRONT_MATTER.match(text)
     if match:
-        parsed = yaml.safe_load(match.group(1))
+        try:
+            parsed = yaml.safe_load(match.group(1))
+        except yaml.YAMLError as exc:
+            raise ArticleError(f"{source_path}: front matter is not valid YAML") from exc
         front = parsed if isinstance(parsed, dict) else {}
         text = text[match.end() :]
     text = re.sub(r"<!--[\s\S]*?-->", "", text)

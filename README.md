@@ -66,7 +66,7 @@ Or from source (for development):
 ```bash
 git clone https://github.com/ethan-sun-dev/runspool
 cd runspool
-uv sync --extra dev
+uv sync
 ```
 
 Requires Python 3.11+. Core dependencies: Typer, Pydantic, PyYAML (SQLite is in
@@ -316,7 +316,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ```bash
-uv sync --extra dev
+uv sync
 uv run ruff check .
 uv run pytest
 ```

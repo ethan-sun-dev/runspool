@@ -29,10 +29,10 @@ import typer
 from pydantic import BaseModel
 
 from runspool.core.credentials import CredentialRef
-from runspool.engine.gate import Deny
+from runspool.engine.gate import Ask, Deny
 from runspool.kernel import Plugin
 from runspool_wechat import steps as _steps
-from runspool_wechat.article import load_article
+from runspool_wechat.article import ArticleError, load_article
 from runspool_wechat.render import render
 
 __all__ = ["BUNDLE", "WechatConfig", "plugin"]
@@ -57,15 +57,20 @@ def apply(ctx, config: WechatConfig) -> None:
 
     # Refuse a draft whose article has problems before anyone is asked to approve it:
     # approving would only lead to a failed step and another approval request.
-    def hold_problem_drafts(request, next_):
-        if request.step.name != "wechat_draft" or config.allow_problems:
+    def gate_drafts(request, next_):
+        if request.step.name != "wechat_draft":
             return next_()
-        problems = _steps.recorded_problems(ctx.config, request.task)
-        if problems:
-            return Deny("article has problems: " + "; ".join(problems))
-        return next_()
+        summary = _steps.rendered_summary(ctx.config, request.task)
+        if summary is None:
+            return next_()  # not rendered: the step itself reports it
+        refusal = _steps.draft_refusal(summary, config)
+        if refusal:
+            return Deny(refusal)
+        # Tell the approver exactly what would leave this machine.
+        files = ", ".join(summary.get("uploads", [])) or "nothing"
+        return Ask(f"save a WeChat draft of {summary['title']!r}, uploading: {files}")
 
-    ctx.on("step/pre-execute", hold_problem_drafts)
+    ctx.on("step/pre-execute", gate_drafts)
 
     names = [config.appsecret] + ([] if config.appid else [config.appid_credential])
     ctx.doctor.register(lambda: ctx.credentials.check(names, "wechat credentials"))
@@ -95,7 +100,11 @@ def _commands(ctx, config: WechatConfig) -> typer.Typer:
         ] = None,
     ) -> None:
         """Lay out an article and write a phone-width preview page."""
-        parsed = load_article(article)
+        try:
+            parsed = load_article(article)
+        except ArticleError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(1) from exc
         rendered = render(
             parsed.body,
             resolve_image=lambda src: (
@@ -106,6 +115,7 @@ def _commands(ctx, config: WechatConfig) -> typer.Typer:
         )
         problems = _steps.article_problems(parsed)
         target = out or parsed.source_path.with_suffix(".wechat-preview.html")
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(_steps.preview_page(parsed, rendered.html, problems), encoding="utf-8")
         for problem in problems:
             typer.echo(f"warning: {problem}", err=True)

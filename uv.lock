@@ -330,7 +330,7 @@ dependencies = [
     { name = "typer" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
@@ -342,14 +342,17 @@ dev = [
 requires-dist = [
     { name = "packaging", specifier = ">=23" },
     { name = "pydantic", specifier = ">=2.6" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
-    { name = "runspool-example-creator", marker = "extra == 'dev'", editable = "plugins/runspool-example-creator" },
-    { name = "runspool-wechat", marker = "extra == 'dev'", editable = "plugins/runspool-wechat" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "ruff", specifier = ">=0.5" },
+    { name = "runspool-example-creator", editable = "plugins/runspool-example-creator" },
+    { name = "runspool-wechat", editable = "plugins/runspool-wechat" },
+]
 
 [[package]]
 name = "runspool-example-creator"

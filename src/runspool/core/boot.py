@@ -97,8 +97,15 @@ class Booted:
 def load_profile(path: Path | str) -> tuple[Profile, AppConfig]:
     path = Path(path)
     profile = Profile.load(path)
-    config = AppConfig.model_validate(profile.settings)
-    config.base_dir = path.resolve().parent
+    base_dir = path.resolve().parent
+    settings = dict(profile.settings)
+    root = settings.get("workspace_root")
+    if isinstance(root, str) and root and not Path(root).expanduser().is_absolute():
+        # Relative to the profile, like plugin_paths: the same profile must mean the
+        # same workspace whichever directory a command or the daemon starts in.
+        settings["workspace_root"] = str(base_dir / root)
+    config = AppConfig.model_validate(settings)
+    config.base_dir = base_dir
     return profile, config
 
 

@@ -425,3 +425,19 @@ def test_the_tasks_service_runs_every_user_action(tmp_path):
     tasks.resume(tid)
     tasks.terminate(tid)
     assert ctx.repo.get_task(tid)["task_status"] == "terminated"
+
+
+def test_relative_paths_resolve_against_the_profile_not_the_cwd(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.txt").write_text("hello", encoding="utf-8")
+    profile = project / "runspool.yaml"
+    profile.write_text("workspace_root: ./workspace\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    ctx = load_context(profile)
+    assert ctx.config.workspace_root == project / "workspace"
+    monkeypatch.chdir(project)
+    tid = ctx.service("tasks").add("a.txt", workflow="local_file")
+    assert ctx.repo.get_task(tid)["input"] == str(project / "a.txt")  # stored absolute

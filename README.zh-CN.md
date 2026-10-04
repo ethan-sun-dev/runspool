@@ -62,7 +62,7 @@ pip install runspool
 ```bash
 git clone https://github.com/ethan-sun-dev/runspool
 cd runspool
-uv sync --extra dev
+uv sync
 ```
 
 需要 Python 3.11+。核心依赖：Typer、Pydantic、PyYAML（SQLite 来自标准库）。

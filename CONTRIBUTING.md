@@ -23,7 +23,7 @@ dependency management.
 ```bash
 git clone https://github.com/ethan-sun-dev/runspool
 cd runspool
-uv sync --extra dev   # creates .venv and installs the project + dev tools
+uv sync   # creates .venv; installs the project, dev tools and the plugins in plugins/
 ```
 
 ## Run the checks

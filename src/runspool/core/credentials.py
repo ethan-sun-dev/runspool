@@ -38,7 +38,9 @@ from pydantic import BaseModel, StringConstraints
 from runspool.core.doctor import Check
 from runspool.kernel import Plugin
 
-CREDENTIAL_NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
+# Environment-variable style (upper case): a lower-case hex string is far more likely
+# a secret pasted by mistake than a name, and must not be echoed back as one.
+CREDENTIAL_NAME_PATTERN = r"^[A-Z_][A-Z0-9_]*$"
 CredentialRef = Annotated[str, StringConstraints(pattern=CREDENTIAL_NAME_PATTERN)]
 """The name of a secret, as configuration refers to it."""
 
