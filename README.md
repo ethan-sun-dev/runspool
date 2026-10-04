@@ -7,8 +7,12 @@
 **Local-first CLI workflows for reliable personal automation.**
 
 Runspool turns scripts, files, and manual checklists into resumable, observable
-workflows — with SQLite state, retries, logs, pause/resume controls, step
-plugins, and JSON output for humans, scripts, and AI agents.
+workflows — with SQLite state, retries, logs, pause/resume controls, approval
+for steps with side effects, and JSON output for humans, scripts, and AI agents.
+
+It is built from plugins on a small kernel: the store, the step registry, the
+task lifecycle, even the CLI's extra commands are plugins, and your own steps,
+workflows and commands plug in the same way.
 
 It runs entirely on your machine. No hosted service, no account, no data leaving
 your laptop by default.
@@ -28,7 +32,10 @@ Runspool gives that automation a backbone:
 - **Resumable** — every task is a row in SQLite; a crash or reboot loses nothing.
 - **Observable** — every state change is an event; every step run is timed.
 - **Controllable** — pause, resume, retry, terminate, reprioritize from the CLI.
-- **Composable** — workflows are ordered lists of steps; add your own as plugins.
+- **Careful** — a step marked as having side effects (publish, upload, send)
+  waits for you to approve it, and never runs unapproved.
+- **Composable** — workflows are ordered lists of steps; add steps, workflows and
+  commands as plugins.
 - **Scriptable** — `--json` on every read command, built for shell and AI agents.
 
 It is **not** an AI tool, and it is **not** a cloud workflow platform. It is a
@@ -66,7 +73,7 @@ Or from source (for development):
 ```bash
 git clone https://github.com/ethan-sun-dev/runspool
 cd runspool
-uv sync --extra dev
+uv sync
 ```
 
 Requires Python 3.11+. Core dependencies: Typer, Pydantic, PyYAML (SQLite is in
@@ -145,9 +152,9 @@ shaped this way.
 flowchart LR
     CLI[runspool CLI] -->|add / run / daemon| ENG
     AGENT[AI agent or script] -->|--json| CLI
-    subgraph ENG[Engine]
+    subgraph ENG[Engine: core plugins on a small kernel]
         COORD[Coordinator] --> POOL[Worker pool]
-        POOL --> RUN[Step runner]
+        POOL --> RUN[Step runner + approval gate]
         RUN --> STEPS[Step registry\nbuilt-in + plugins]
     end
     ENG <--> DB[(SQLite\ntasks · events · step_runs)]
@@ -157,24 +164,33 @@ flowchart LR
 A **task** carries an `input` through a **workflow** — an ordered list of
 **steps**. The **coordinator** claims queued tasks (respecting per-step
 concurrency quotas), the **worker pool** runs each step, and the **state
-machine** records every transition. Long jobs run under the `daemon`; one-shot
-runs use `run`.
+machine** records every transition. A step with side effects waits in
+`awaiting_approval` until you `runspool approve` it. Long jobs run under the
+`daemon`; one-shot runs use `run`.
 
 ## Task lifecycle
 
 ```
-queued → running → (next step) queued → … → completed
+queued → running → (next step) queued → … → completed | partially_completed
+                 ↘ queued, same step         (deferred; optionally until a delay passes — `wake` ends it)
                  ↘ failed ──(retry)──↗
                  ↘ manual_required          (retries exhausted; needs you)
+                 ↘ awaiting_approval ──approve──→ queued   (side-effect step)
+                                     ──reject───→ manual_required
    running → pause_pending → paused → (resume) queued
-   non-terminal → terminated   (completed / terminated refuse further control)
+   non-terminal → terminated   (terminal states refuse further control)
 ```
+
+`partially_completed` means every step ran but one reported it could only do part
+of its job. Pause and terminate always take effect at a step boundary, and
+terminate wins; see [docs/concepts.md](docs/concepts.md).
 
 ## CLI
 
 ```text
 runspool init                     # create config + database
 runspool add <input> -w <wf>      # queue a task (default workflow: local_file)
+                                  #   --meta KEY=VALUE, --parent <id>, --name, --force
 runspool run                      # advance all runnable tasks once (great for demos)
 runspool daemon                   # run a resident loop (long-running automation)
 runspool daemon-status            # report whether a daemon is running
@@ -184,10 +200,17 @@ runspool inspect <id>             # agent-friendly snapshot + suggested next act
 runspool logs <id>                # event history for a task
 runspool overview                 # counts by status
 runspool pause|resume|retry|terminate <id>
+runspool approve <id>             # let a waiting side-effect step run (this attempt)
+runspool reject <id> --reason ... # refuse it; the task needs attention
+runspool wake <id>                # run a deferred task now instead of after its delay
 runspool set-priority|set-retries|set-step <id> <value>
 runspool workflows                # list workflows and their steps
-runspool doctor                   # check the local environment
+runspool doctor                   # check the environment, plugins and credentials
 ```
+
+Plugins add their own commands, shown by `runspool -c <profile> --help` — e.g.
+the official WeChat plugin adds `runspool wechat preview` and
+`runspool wechat token`.
 
 Every read command supports `--json`:
 
@@ -235,8 +258,8 @@ Three runnable examples, each with its own README and sample data:
 | Example | What it shows |
 | --- | --- |
 | [local-file-pipeline](examples/local-file-pipeline/) | The quickstart. Built-in steps only; runs offline in minutes. |
-| [client-intel-brief](examples/client-intel-brief/) | A real consulting workflow: sources → briefing package. Custom plugin steps; demonstrates `manual_required` recovery. |
-| [creator-publishing-pipeline](examples/creator-publishing-pipeline/) | A content pipeline that builds a multi-platform **draft** package (never auto-publishes). |
+| [client-intel-brief](examples/client-intel-brief/) | A real consulting workflow: sources → briefing package. Custom steps loaded from config; demonstrates `manual_required` recovery. |
+| [creator-publishing-pipeline](examples/creator-publishing-pipeline/) | A content pipeline that builds a multi-platform **draft** package (never auto-publishes). Its steps come from a plugin package. |
 
 ## Write a custom step
 
@@ -267,9 +290,17 @@ workflows:
     steps: [greet, archive]
 ```
 
-Steps can also raise `StepDeferred` to wait for a precondition (retry next tick
-without counting a failure), or raise any exception to fail and retry. See
-[docs/writing-steps.md](docs/writing-steps.md).
+Steps can also raise `StepDeferred` to wait for a precondition (optionally for
+a delay, without counting a failure), return `degraded=True` when they could only
+do part of their job, or raise any exception to fail and retry. A step whose
+effects leave your machine sets `side_effect = True` and runs only after you
+approve it. See [docs/writing-steps.md](docs/writing-steps.md).
+
+To ship steps with their own config, default workflow, commands and doctor
+checks — installable with `pip` — package them as a plugin; see
+[docs/plugins.md](docs/plugins.md). The official
+[runspool-wechat](plugins/runspool-wechat/) plugin (lay out Markdown for WeChat
+Official Accounts and save it as a draft, after approval) is a complete example.
 
 ## Concurrency
 
@@ -292,9 +323,15 @@ touch the database. The reasoning behind these boundaries is in
 
 - **Local-first.** All state lives under `workspace_root` on your machine. There
   is no hosted service and nothing is uploaded by default.
-- **No secrets required.** The engine and built-in steps need no API keys.
-- **Drafts, not auto-publish.** Content examples produce drafts and checklists;
-  publishing is always a deliberate, manual step.
+- **No secrets required.** The engine and built-in steps need no API keys. A
+  plugin that does (like runspool-wechat) refers to secrets by name only; values
+  come from your environment or an owner-only credentials file, never from config,
+  logs or errors.
+- **Approval before side effects.** A step that publishes, uploads or sends runs
+  only after you approve that attempt; without an approval policy it is refused,
+  never run.
+- **Drafts, not auto-publish.** Content examples and the WeChat plugin produce
+  drafts; publishing is always a deliberate, manual step.
 
 ## Non-goals
 
@@ -307,8 +344,9 @@ touch the database. The reasoning behind these boundaries is in
 
 - `runspool watch` to follow a task's events live.
 - Optional structured log export (JSONL).
-- A small library of community step plugins.
-- Opt-in publish adapters for the creator example (draft submission only).
+- Notification plugins that tell you a task awaits approval — and let you
+  approve or reject from the message.
+- runspool-wechat: themes, tables and image compression.
 
 ## Contributing
 
@@ -316,7 +354,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ```bash
-uv sync --extra dev
+uv sync
 uv run ruff check .
 uv run pytest
 ```

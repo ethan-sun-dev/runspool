@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runspool"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local-first CLI workflow engine for reliable personal automation."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,12 +36,18 @@ dependencies = [
     "typer>=0.12",
     "pydantic>=2.6",
     "PyYAML>=6.0",
+    "packaging>=23",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
+# Development only (PEP 735): never part of the published package's metadata.
+# `uv sync` installs this group by default.
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
+    # The plugins in this repository, so their tests and the examples run.
+    "runspool-example-creator",
+    "runspool-wechat",
 ]
 
 [project.urls]
@@ -51,10 +57,20 @@ Documentation = "https://github.com/ethan-sun-dev/runspool/tree/main/docs"
 Issues = "https://github.com/ethan-sun-dev/runspool/issues"
 
 [project.scripts]
-runspool = "runspool.cli:app"
+runspool = "runspool.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/runspool"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["plugins/", "uv.lock"]
+
+[tool.uv.workspace]
+members = ["plugins/*"]
+
+[tool.uv.sources]
+runspool-example-creator = { workspace = true }
+runspool-wechat = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -70,5 +86,5 @@ select = ["E", "F", "I", "UP", "B", "W"]
 "src/runspool/cli.py" = ["B008"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "plugins/*/tests"]
 addopts = "-q"

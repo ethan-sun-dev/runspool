@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 from runspool.app import AppContext
-from runspool.models import EventType, TaskStatus
-from runspool.persistence.state_machine import IllegalTransition
+from runspool.models import EventType
+from runspool.persistence.event_log import Event
 
 
 class DuplicateTaskError(Exception):
@@ -23,21 +26,34 @@ def add_task(
     workflow: str,
     force: bool = False,
     name: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    parent_task_id: int | None = None,
 ) -> int:
     wf = ctx.config.workflow(workflow)  # unknown workflow raises KeyError
+    candidate = Path(input).expanduser()
+    if candidate.exists():
+        # Store an existing file or directory absolutely, so steps find it whichever
+        # directory the daemon or a later `run` starts in.
+        input = str(candidate.resolve())
+    if parent_task_id is not None and ctx.repo.get_task(parent_task_id) is None:
+        raise KeyError(parent_task_id)
     if not force:
         existing = ctx.repo.find_active_by_input(input)
         if existing is not None:
             raise DuplicateTaskError(existing["id"])
-    task_id = ctx.repo.create_task(
+    message = "task created" if parent_task_id is None else f"task created from {parent_task_id}"
+    # The task, its metadata and its "created" event are written in one transaction:
+    # nothing can claim the task before what it needs to run is recorded with it.
+    return ctx.repo.create_task(
         input=input,
         workflow=workflow,
         first_step=wf.first_step(),
         max_retries=ctx.config.scheduler.max_retries,
         name=name,
+        metadata=metadata,
+        parent_task_id=parent_task_id,
+        event=Event(EventType.CREATED, step=wf.first_step(), message=message),
     )
-    ctx.log.add(task_id, EventType.CREATED, step=wf.first_step(), message="task created")
-    return task_id
 
 
 def pause_task(ctx: AppContext, task_id: int) -> None:
@@ -62,31 +78,25 @@ def set_priority(ctx: AppContext, task_id: int, priority: int) -> None:
 
 
 def set_retries(ctx: AppContext, task_id: int, max_retries: int) -> None:
-    # Mirror the config model's ge=0 constraint: a negative cap would make
-    # fail()'s `retry_count > max_retries` check route the very first failure
-    # straight to manual_required, silently disabling retries.
     if max_retries < 0:
         raise ValueError(f"max-retries must be >= 0, got {max_retries}")
-    _require_task(ctx, task_id)
-    ctx.repo.update_fields(task_id, {"max_retries": max_retries, "retry_count": 0})
-
-
-_SET_STEP_ALLOWED = (TaskStatus.FAILED, TaskStatus.MANUAL_REQUIRED)
+    _sm(ctx, task_id).set_retries(task_id, max_retries)
 
 
 def set_step(ctx: AppContext, task_id: int, step: str, *, force: bool = False) -> None:
-    task = _require_task(ctx, task_id)
-    wf = ctx.config.workflow(task["workflow"])
-    if step not in wf.steps:
-        raise ValueError(f"step {step!r} is not part of workflow {wf.name!r}")
-    status = task["task_status"]
-    # Moving a running/queued task mid-flight, or rewinding a finished one, is a
-    # foot-gun; restrict to recovery states unless explicitly forced.
-    if not force and status not in _SET_STEP_ALLOWED:
-        raise IllegalTransition(
-            task_id, status, "set-step", allowed="failed or manual_required (use --force)"
-        )
-    ctx.repo.update_fields(task_id, {"step": step})
+    _sm(ctx, task_id).set_step(task_id, step, force=force)
+
+
+def wake_task(ctx: AppContext, task_id: int) -> None:
+    _sm(ctx, task_id).wake(task_id)
+
+
+def approve_task(ctx: AppContext, task_id: int, *, by: str = "cli") -> None:
+    _sm(ctx, task_id).approve(task_id, by=by)
+
+
+def reject_task(ctx: AppContext, task_id: int, *, reason: str = "", by: str = "cli") -> None:
+    _sm(ctx, task_id).reject(task_id, reason=reason, by=by)
 
 
 def _require_task(ctx: AppContext, task_id: int) -> dict:

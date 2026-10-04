@@ -6,8 +6,11 @@
 > [English README](README.md) 为准。
 
 Runspool 把脚本、文件和人工 checklist 变成「可恢复、可观测」的工作流：用 SQLite
-保存状态，内置重试、日志、暂停/恢复控制、步骤插件，并为人类、脚本和 AI agent
-提供 JSON 输出。
+保存状态，内置重试、日志、暂停/恢复控制，有对外副作用的步骤须经你审批，并为人类、
+脚本和 AI agent 提供 JSON 输出。
+
+它由一个很小的内核加一组插件构成：存储、步骤登记、任务生命周期，乃至命令行的扩展
+命令都是插件；你自己的步骤、工作流和命令也用同一套方式接进来。
 
 它完全在你自己的机器上运行——默认没有托管服务、不需要账号、数据不外传。
 
@@ -25,7 +28,9 @@ Runspool 给这类自动化一根「主心骨」：
 - **可恢复**：每个任务都是 SQLite 里的一行；崩溃或重启都不丢进度。
 - **可观测**：每次状态变化都是一条事件；每次步骤运行都有计时。
 - **可控制**：在命令行里暂停、恢复、重试、终止、调整优先级。
-- **可组合**：工作流是有序的步骤列表；可以用插件添加自己的步骤。
+- **稳妥**：标明有对外副作用的步骤（发布、上传、发送）会等你批准后才执行，绝不会
+  未经批准就运行。
+- **可组合**：工作流是有序的步骤列表；步骤、工作流和命令都可以通过插件添加。
 - **可脚本化**：所有读取类命令都支持 `--json`，为 shell 和 AI agent 而设计。
 
 它**不是** AI 工具，也**不是**云端工作流平台。它是一个小而可靠的引擎，把本地脚本、
@@ -62,7 +67,7 @@ pip install runspool
 ```bash
 git clone https://github.com/ethan-sun-dev/runspool
 cd runspool
-uv sync --extra dev
+uv sync
 ```
 
 需要 Python 3.11+。核心依赖：Typer、Pydantic、PyYAML（SQLite 来自标准库）。
@@ -136,6 +141,7 @@ agent 需要的全貌交到手里：
 ```text
 runspool init                     # 创建配置 + 数据库
 runspool add <input> -w <wf>      # 入队一个任务（默认工作流：local_file）
+                                  #   另有 --meta KEY=VALUE、--parent <id>、--name、--force
 runspool run                      # 一次性推进所有可运行任务（适合演示/批处理）
 runspool daemon                   # 常驻循环（长任务自动化）
 runspool daemon-status            # 查看 daemon 是否在运行
@@ -145,10 +151,16 @@ runspool inspect <id>             # 面向 agent 的快照 + 建议的下一步�
 runspool logs <id>                # 任务事件历史
 runspool overview                 # 按状态汇总
 runspool pause|resume|retry|terminate <id>
+runspool approve <id>             # 放行一个等待审批的副作用步骤（仅限这一次尝试）
+runspool reject <id> --reason ... # 拒绝它；任务转为需要人工处理
+runspool wake <id>                # 让推迟中的任务立即可运行，不再等延时
 runspool set-priority|set-retries|set-step <id> <value>
 runspool workflows                # 列出工作流及其步骤
-runspool doctor                   # 检查本机环境
+runspool doctor                   # 检查本机环境、插件和凭证
 ```
+
+插件可以添加自己的命令，用 `runspool -c <profile> --help` 查看——例如官方公众号插件
+提供 `runspool wechat preview` 和 `runspool wechat token`。
 
 以下命令都支持 `--json`：只读类的 `status`、`inspect`、`logs`、`overview`、
 `workflows`、`doctor`，以及会推进状态的 `run`。
@@ -178,8 +190,8 @@ agent 可以轮询 `inspect --json`，根据 `available_actions` 行动，修复
 | 示例 | 展示内容 |
 | --- | --- |
 | [local-file-pipeline](examples/local-file-pipeline/) | 快速上手。仅用内置步骤，离线几分钟跑通。 |
-| [client-intel-brief](examples/client-intel-brief/) | 真实顾问场景：把资料整理成简报包。自定义插件步骤，演示 `manual_required` 恢复流程。 |
-| [creator-publishing-pipeline](examples/creator-publishing-pipeline/) | 内容流水线，生成多平台**草稿**包（默认绝不自动发布）。 |
+| [client-intel-brief](examples/client-intel-brief/) | 真实顾问场景：把资料整理成简报包。从配置加载自定义步骤，演示 `manual_required` 恢复流程。 |
+| [creator-publishing-pipeline](examples/creator-publishing-pipeline/) | 内容流水线，生成多平台**草稿**包（默认绝不自动发布）。步骤来自一个插件包。 |
 
 ## 编写自定义步骤
 
@@ -208,13 +220,25 @@ workflows:
     steps: [greet, archive]
 ```
 
-详见 [docs/writing-steps.md](docs/writing-steps.md)。
+步骤还可以抛出 `StepDeferred` 等待前置条件（可指定延时，不计失败次数），在只完成了
+部分工作时返回 `degraded=True`，或抛出任意异常表示失败并重试。会对外产生副作用的步骤
+设置 `side_effect = True`，每次执行前都要经你批准。详见
+[docs/writing-steps.md](docs/writing-steps.md)。
+
+如果想让步骤自带配置、默认工作流、命令和 doctor 检查，并能用 `pip` 安装，就把它们
+打包成插件，见 [docs/plugins.md](docs/plugins.md)。官方插件
+[runspool-wechat](plugins/runspool-wechat/)（把 Markdown 排版成公众号格式，经审批后
+存为草稿）就是一个完整的例子。
 
 ## 隐私与安全
 
 - **本地优先**：所有状态都在你机器上的 `workspace_root` 下，默认不上传任何数据。
-- **无需密钥**：引擎和内置步骤不需要任何 API key。
-- **只出草稿，不自动发布**：内容类示例只生成草稿和 checklist，发布始终是你手动、
+- **无需密钥**：引擎和内置步骤不需要任何 API key。需要密钥的插件（如
+  runspool-wechat）只按名字引用凭证；值来自环境变量或仅本人可读的凭证文件，绝不会
+  出现在配置、日志或错误信息里。
+- **副作用先审批**：发布、上传、发送类步骤只有在你批准这一次尝试后才执行；没有可用
+  的审批策略时，它会被拒绝，而不是被执行。
+- **只出草稿，不自动发布**：内容类示例和公众号插件只生成草稿，发布始终是你手动、
   有意识的一步。
 
 ## 非目标（Non-goals）

@@ -17,6 +17,9 @@ class StepRegistry:
             raise ValueError(f"step already registered: {step.name!r}")
         self._steps[step.name] = step
 
+    def unregister(self, name: str) -> None:
+        self._steps.pop(name, None)
+
     def get(self, name: str) -> Step:
         if name not in self._steps:
             raise KeyError(f"unregistered step: {name!r}")

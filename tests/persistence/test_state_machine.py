@@ -6,6 +6,7 @@ from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
 from runspool.persistence.state_machine import IllegalTransition, StateMachine
 from runspool.persistence.step_run_log import StepRunLog
+from tests.support import force_fields
 
 
 def _setup(tmp_path, steps=("a", "b"), max_retries=1):
@@ -154,7 +155,7 @@ def test_defer_keeps_step_and_requeues(tmp_path):
 
 
 def _force_status(repo, tid, status):
-    repo.update_fields(tid, {"task_status": status})
+    force_fields(repo, tid, {"task_status": status})
 
 
 def test_retry_rejected_on_completed(tmp_path):

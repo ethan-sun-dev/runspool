@@ -5,6 +5,7 @@ import pytest
 from runspool.models import TaskStatus
 from runspool.persistence.connection import Database
 from runspool.persistence.repository import TaskRepository
+from tests.support import force_fields
 
 
 def _repo(tmp_path):
@@ -36,7 +37,7 @@ def test_find_active_by_input_ignores_terminal(tmp_path):
     repo = _repo(tmp_path)
     tid = repo.create_task(input="dup", workflow="w", first_step="s", max_retries=0)
     assert repo.find_active_by_input("dup")["id"] == tid
-    repo.update_fields(tid, {"task_status": TaskStatus.COMPLETED})
+    force_fields(repo, tid, {"task_status": TaskStatus.COMPLETED})
     assert repo.find_active_by_input("dup") is None
 
 

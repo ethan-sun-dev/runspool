@@ -187,3 +187,78 @@ def test_add_unknown_workflow(tmp_path):
     result = _invoke(cfg, "add", "x", "--workflow", "nope")
     assert result.exit_code == 1
     assert "undefined workflow" in result.output
+
+
+def test_wake_runs_a_deferred_task_now(tmp_path):
+    from runspool.app import load_context
+    from tests.support import force_fields
+
+    cfg = _init(tmp_path)
+    src = tmp_path / "a.txt"
+    src.write_text("hello world", encoding="utf-8")
+    _invoke(cfg, "add", str(src))
+    assert _invoke(cfg, "wake", "1").exit_code == 1  # not waiting on anything
+    force_fields(load_context(cfg).repo, 1, {"next_retry_at": "2999-01-01 00:00:00"})
+    woke = _invoke(cfg, "wake", "1")
+    assert woke.exit_code == 0, woke.output
+    assert json.loads(_invoke(cfg, "status", "1", "--json").output)["next_retry_at"] is None
+
+
+def test_add_a_sub_task_with_parent_and_metadata(tmp_path):
+    cfg = _init(tmp_path)
+    src = tmp_path / "a.txt"
+    src.write_text("hello world", encoding="utf-8")
+    _invoke(cfg, "add", str(src))
+    child = _invoke(
+        cfg, "add", "wechat:1", "--parent", "1", "--meta", "regen=yes", "--meta", "lang=zh"
+    )
+    assert child.exit_code == 0, child.output
+    view = json.loads(_invoke(cfg, "inspect", "2", "--json").output)
+    assert (view["parent_task_id"], view["metadata"]) == (1, {"regen": "yes", "lang": "zh"})
+    missing = _invoke(cfg, "add", "x", "--parent", "99")
+    assert missing.exit_code == 1 and "undefined parent task: 99" in missing.output
+    bad = _invoke(cfg, "add", "y", "--meta", "novalue")
+    assert bad.exit_code == 1 and "KEY=VALUE" in bad.output
+
+
+def test_first_task_id_continues_an_older_numbering(tmp_path):
+    cfg = _init(tmp_path)
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "\nfirst_task_id: 700\n", encoding="utf-8")
+    src = tmp_path / "a.txt"
+    src.write_text("hello world", encoding="utf-8")
+    assert "Created task 700" in _invoke(cfg, "add", str(src)).output
+
+
+def test_the_example_config_loads(tmp_path):
+    from pathlib import Path
+
+    from runspool.core.boot import load_profile
+
+    example = Path(__file__).resolve().parents[1] / "config.example.yaml"
+    copy = tmp_path / "config.yaml"
+    copy.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    load_profile(copy)  # raises if the shipped example is invalid
+
+
+def test_doctor_exits_non_zero_when_a_check_fails(tmp_path):
+    cfg = _init(tmp_path)
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8")
+        + "\nworkflows:\n  broken:\n    steps: [no_such_step]\n",
+        encoding="utf-8",
+    )
+    result = _invoke(cfg, "doctor", "--json")
+    assert result.exit_code == 1
+    assert any(not c["ok"] for c in json.loads(result.output))
+
+
+def test_bad_engine_settings_are_reported_without_echoing_values(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"workspace_root: {tmp_path / 'ws'}\nscheduler:\n  max_retries: sekrit-not-a-number\n",
+        encoding="utf-8",
+    )
+    result = _invoke(cfg, "status")
+    assert result.exit_code == 1
+    assert "max_retries" in result.output and "sekrit" not in result.output
+    assert "Traceback" not in result.output

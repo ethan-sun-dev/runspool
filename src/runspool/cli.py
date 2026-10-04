@@ -20,6 +20,7 @@ from runspool.display import (
     format_task_list,
 )
 from runspool.doctor import run_doctor
+from runspool.kernel import ConfigError, KernelError
 from runspool.persistence.state_machine import IllegalTransition
 from runspool.runtime import (
     build_daemon,
@@ -35,11 +36,11 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-_STATE: dict[str, Path] = {"config_path": Path(DEFAULT_CONFIG_FILENAME)}
+_STATE: dict[str, Any] = {"config_path": Path(DEFAULT_CONFIG_FILENAME), "booted": None}
 
 
 @app.callback()
-def main(
+def root(
     config_path: Path = typer.Option(
         Path(DEFAULT_CONFIG_FILENAME), "--config-path", "-c", help="Path to the config file."
     ),
@@ -48,7 +49,22 @@ def main(
 
 
 def _ctx():
-    return load_context(_STATE["config_path"])
+    path = Path(_STATE["config_path"])
+    booted = _STATE.get("booted")
+    if booted is not None and booted[0] == path:
+        return booted[1]  # booted by main() to collect plugin commands; reuse it
+    failed = _STATE.get("boot_error")
+    if failed is not None and failed[0] == path:
+        _fail(failed[1])  # main() already tried this profile: report, don't boot twice
+    try:
+        return load_context(path)
+    except (KernelError, ConfigError) as exc:  # a required plugin failed, or bad config
+        _fail(exc)
+
+
+def _fail(exc: Exception):
+    typer.echo(f"error: {exc}", err=True)
+    raise typer.Exit(1) from exc
 
 
 def _emit_json(obj: Any) -> None:
@@ -76,7 +92,10 @@ def init(
     ),
 ) -> None:
     """Generate a config (without overwriting an existing one) and init the database."""
-    created = init_app(_STATE["config_path"], workspace_root=workspace_root)
+    try:
+        created = init_app(_STATE["config_path"], workspace_root=workspace_root)
+    except KernelError as exc:
+        _fail(exc)
     if created:
         typer.echo(f"Created {_STATE['config_path']} and initialised the database.")
     else:
@@ -89,15 +108,36 @@ def add(
     workflow: str = typer.Option("local_file", "--workflow", "-w", help="Workflow name."),
     name: str = typer.Option(None, "--name", help="Human-readable task name."),
     force: bool = typer.Option(False, "--force", help="Allow a duplicate active task."),
+    parent: int = typer.Option(None, "--parent", help="Id of the task this one derives from."),
+    meta: list[str] = typer.Option(
+        None, "--meta", help="Metadata as KEY=VALUE (repeatable)."
+    ),
 ) -> None:
     """Add a task for an input."""
+    metadata: dict[str, str] = {}
+    for item in meta or []:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            typer.echo(f"--meta expects KEY=VALUE, got {item!r}")
+            raise typer.Exit(1)
+        metadata[key] = value
     try:
-        task_id = commands.add_task(_ctx(), input, workflow=workflow, name=name, force=force)
+        task_id = commands.add_task(
+            _ctx(),
+            input,
+            workflow=workflow,
+            name=name,
+            force=force,
+            metadata=metadata or None,
+            parent_task_id=parent,
+        )
     except commands.DuplicateTaskError as exc:
         typer.echo(f"active task already exists: {exc.existing_id} (use --force to add anyway)")
         raise typer.Exit(1) from exc
     except KeyError as exc:
-        typer.echo(f"undefined workflow: {exc.args[0] if exc.args else exc}")
+        missing = exc.args[0] if exc.args else exc
+        what = "parent task" if missing == parent else "workflow"
+        typer.echo(f"undefined {what}: {missing}")
         raise typer.Exit(1) from exc
     typer.echo(f"Created task {task_id}")
 
@@ -118,7 +158,10 @@ def run(
     # In JSON mode, keep stdout a single clean JSON document by silencing the
     # per-step notifier entirely (default would otherwise print to stderr).
     notifier = (lambda m: None) if json_output else (lambda m: typer.echo(m))
-    rounds = run_until_idle(ctx, notifier=notifier)
+    try:
+        rounds = run_until_idle(ctx, notifier=notifier)
+    except KernelError as exc:  # steps unavailable because a plugin failed to load
+        _fail(exc)
     if json_output:
         _emit_json({"rounds": rounds, "tasks": list_view(ctx.repo.list_all())})
     else:
@@ -250,6 +293,42 @@ def retry(task_id: int = typer.Argument(...)) -> None:
     _guard(lambda: commands.retry_task(_ctx(), task_id), f"Requeued task {task_id}")
 
 
+@app.command()
+def approve(task_id: int = typer.Argument(...)) -> None:
+    """Approve the step a task is waiting on (that one attempt), and requeue it."""
+    _guard(
+        lambda: commands.approve_task(_ctx(), task_id, by=_who()),
+        f"Approved task {task_id}",
+    )
+
+
+@app.command()
+def reject(
+    task_id: int = typer.Argument(...),
+    reason: str = typer.Option("", "--reason", help="Why; kept in the task's log."),
+) -> None:
+    """Refuse the step a task is waiting on; the task then needs attention."""
+    _guard(
+        lambda: commands.reject_task(_ctx(), task_id, reason=reason, by=_who()),
+        f"Rejected task {task_id}",
+    )
+
+
+def _who() -> str:
+    import getpass
+
+    try:
+        return f"cli:{getpass.getuser()}"
+    except Exception:  # noqa: BLE001 - no user name is not a reason to fail
+        return "cli"
+
+
+@app.command()
+def wake(task_id: int = typer.Argument(...)) -> None:
+    """Run a deferred task now instead of waiting out its delay."""
+    _guard(lambda: commands.wake_task(_ctx(), task_id), f"Woke task {task_id}")
+
+
 @app.command(name="set-priority")
 def set_priority_cmd(
     task_id: int = typer.Argument(...), priority: int = typer.Argument(...)
@@ -304,10 +383,12 @@ def doctor(json_output: bool = typer.Option(False, "--json", help="Emit JSON."))
     checks = run_doctor(_ctx())
     if json_output:
         _emit_json([{"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks])
-        return
-    for c in checks:
-        mark = "OK " if c.ok else "BAD"
-        typer.echo(f"[{mark}] {c.name}: {c.detail}")
+    else:
+        for c in checks:
+            mark = "OK " if c.ok else "BAD"
+            typer.echo(f"[{mark}] {c.name}: {c.detail}")
+    if not all(c.ok for c in checks):
+        raise typer.Exit(1)  # so scripts and agents can act on the result
 
 
 @app.command(name="daemon-status")
@@ -333,7 +414,10 @@ def daemon() -> None:
     if daemon_status(ctx)["running"]:
         typer.echo("daemon already running; not starting another")
         raise typer.Exit(1)
-    d = build_daemon(ctx)
+    try:
+        d = build_daemon(ctx)
+    except KernelError as exc:
+        _fail(exc)
     pid_file = daemon_pid_file(ctx)
     write_pid(pid_file, os.getpid())
 
@@ -347,7 +431,110 @@ def daemon() -> None:
         d.run()
     finally:
         pid_file.unlink(missing_ok=True)
+        if ctx.kernel is not None:
+            ctx.kernel.dispose()  # let plugins release threads, sockets, files
+
+
+def _config_path_from(argv: list[str]) -> Path:
+    """The profile path among the global options (those before the command)."""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-c", "--config-path") and i + 1 < len(argv):
+            return Path(argv[i + 1])
+        if arg.startswith("--config-path="):
+            return Path(arg.split("=", 1)[1])
+        if arg.startswith("-c") and not arg.startswith("--") and len(arg) > 2:
+            return Path(arg[2:])  # click's attached form: -cprofile.yaml
+        if not arg.startswith("-"):
+            break  # the command: options after it are the command's, not global
+        i += 1
+    return Path(DEFAULT_CONFIG_FILENAME)
+
+
+def build_app(config_path: Path | str) -> typer.Typer:
+    """The CLI for a profile: the built-in commands plus those its plugins register.
+
+    Boots the profile (and keeps the context for the command to reuse). If it does
+    not boot, only the built-in commands are offered; the command then reports why.
+    """
+    combined = typer.Typer(help=app.info.help, no_args_is_help=True)
+    combined.registered_callback = app.registered_callback
+    combined.registered_commands = list(app.registered_commands)
+    combined.registered_groups = list(app.registered_groups)
+    path = Path(config_path)
+    _STATE["booted"] = None
+    _STATE["boot_error"] = None
+    if not path.exists():
+        return combined
+    try:
+        ctx = load_context(path)
+    except Exception as exc:  # noqa: BLE001 - reported by the command that needs it
+        _STATE["boot_error"] = (path, exc)
+        return combined
+    _STATE["booted"] = (path, ctx)
+    builtin = _builtin_names()
+    try:
+        contributed_commands = ctx.service("cli").commands
+    except LookupError:  # the cli entry is disabled: built-in commands only
+        contributed_commands = []
+    for contributed in contributed_commands:
+        if contributed.name in builtin:
+            typer.echo(
+                f"warning: plugin {contributed.owner!r} command {contributed.name!r} "
+                "clashes with a built-in command and is ignored",
+                err=True,
+            )
+            continue
+        if isinstance(contributed.command, typer.Typer):
+            combined.add_typer(contributed.command, name=contributed.name)
+        else:
+            combined.command(name=contributed.name)(contributed.command)
+    return combined
+
+
+def main() -> None:
+    """Console entry point: ``runspool``."""
+    import sys
+
+    argv = sys.argv[1:]
+    cli = build_app(_config_path_from(argv))
+    failed = _STATE.get("boot_error")
+    error = failed[1] if failed is not None else None
+    command = _command_in(argv)
+    if error is not None and command and command not in _builtin_names():
+        # Probably a plugin command that did not load: say why, not "No such command".
+        typer.echo(
+            f"error: {command!r} is unavailable: the profile did not load: {error}", err=True
+        )
+        raise SystemExit(1)
+    try:
+        cli()
+    finally:
+        # Let plugins release what they hold (threads, sockets, files) when the
+        # command ends, not only when a daemon stops.
+        booted = _STATE.get("booted")
+        if booted is not None and booted[1].kernel is not None:
+            booted[1].kernel.dispose()
+
+
+def _builtin_names() -> set[str]:
+    return {c.name or c.callback.__name__.replace("_", "-") for c in app.registered_commands}
+
+
+def _command_in(argv: list[str]) -> str | None:
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+            continue
+        if arg in ("-c", "--config-path"):
+            skip = True
+            continue
+        if not arg.startswith("-"):
+            return arg
+    return None
 
 
 if __name__ == "__main__":
-    app()
+    main()

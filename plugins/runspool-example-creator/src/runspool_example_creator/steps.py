@@ -71,11 +71,7 @@ class CollectMaterialsStep(Step):
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(root, dest)
-        index = [
-            str(p.relative_to(dest))
-            for p in sorted(dest.rglob("*"))
-            if p.is_file()
-        ]
+        index = [str(p.relative_to(dest)) for p in sorted(dest.rglob("*")) if p.is_file()]
         (ws / "materials-index.json").write_text(
             json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
@@ -140,7 +136,7 @@ class RenderPlatformPackageStep(Step):
         # WeChat: a minimal self-contained HTML wrapper (no external rendering).
         html_body = article.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         (dist / "wechat.html").write_text(
-            "<!doctype html>\n<html><head><meta charset=\"utf-8\">"
+            '<!doctype html>\n<html><head><meta charset="utf-8">'
             f"<title>{title}</title></head>\n<body>\n<pre>{html_body}</pre>\n"
             "</body></html>\n",
             encoding="utf-8",
@@ -175,9 +171,7 @@ class CreatePublishChecklistStep(Step):
     def run(self, ctx: StepContext) -> StepResult:
         ws = task_workspace(ctx.config, ctx.task)
         dist = _dist(ws)
-        artifacts = sorted(
-            str(p.relative_to(dist)) for p in dist.rglob("*") if p.is_file()
-        )
+        artifacts = sorted(str(p.relative_to(dist)) for p in dist.rglob("*") if p.is_file())
 
         checklist = [
             "# Publish checklist",

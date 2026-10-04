@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import UTC, datetime
 
 from runspool.clock import to_local_text, utcnow_text
@@ -49,7 +50,14 @@ def format_overview(repo: TaskRepository) -> str:
     return "\n".join(lines)
 
 
-_STATUS_GLYPH = {"ok": "✓", "failed": "✗", "running": "⟳", "deferred": "…"}
+_STATUS_GLYPH = {
+    "ok": "✓",
+    "failed": "✗",
+    "running": "⟳",
+    "deferred": "…",
+    "degraded": "⚠",
+    "interrupted": "↯",
+}
 
 
 def format_task_detail(
@@ -120,10 +128,35 @@ def _render_step_timeline(
             out.append(f"    {glyph} {step:<18} {dur}".rstrip())
         if status == "failed" and run.get("error"):
             out.append(f"        └ {run['error']}")
+        elif status in ("degraded", "deferred") and run.get("note"):
+            out.append(f"        └ {run['note']}")
     return out
 
 
 _LABEL_MAX = 50
+
+
+def _char_width(ch: str) -> int:
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def truncate_by_width(text: str, max_width: int) -> str:
+    """Cut ``text`` to ``max_width`` terminal columns, adding "..." when cut.
+
+    CJK and other wide characters take two columns; a wide character that does not
+    fit is dropped whole rather than split.
+    """
+    if sum(_char_width(ch) for ch in text) <= max_width:
+        return text
+    out: list[str] = []
+    width = 0
+    for ch in text:
+        w = _char_width(ch)
+        if width + w > max_width:
+            break
+        out.append(ch)
+        width += w
+    return "".join(out) + "..."
 
 
 def format_task_list(repo: TaskRepository) -> str:
@@ -133,9 +166,7 @@ def format_task_list(repo: TaskRepository) -> str:
         return "(no tasks)"
     rows: list[str] = []
     for t in tasks:
-        label = t.get("name") or t["input"]
-        if len(label) > _LABEL_MAX:
-            label = label[:_LABEL_MAX] + "..."
+        label = truncate_by_width(t.get("name") or t["input"], _LABEL_MAX)
         rows.append(
             f"#{t['id']:>4}  {t['task_status']:<16} {t['step']:<18} "
             f"{to_local_text(t['created_at'])}  {label}"

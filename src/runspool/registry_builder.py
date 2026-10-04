@@ -42,7 +42,7 @@ def load_step(import_target: str) -> Step:
     return instance
 
 
-def _ensure_plugin_paths(paths: list[Path]) -> None:
+def ensure_plugin_paths(paths: list[Path]) -> None:
     for path in paths:
         s = str(path)
         if s not in sys.path:
@@ -59,7 +59,7 @@ def build_registry(config: AppConfig) -> StepRegistry:
     register_builtins(registry)
 
     if config.steps:
-        _ensure_plugin_paths(config.resolved_plugin_paths())
+        ensure_plugin_paths(config.resolved_plugin_paths())
         for key, plugin in config.steps.items():
             step = load_step(plugin.import_target)
             if step.name != key:

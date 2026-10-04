@@ -1,6 +1,7 @@
 from runspool.commands import add_task
 from runspool.models import TaskStatus
 from runspool.views import inspect_view, task_view
+from tests.support import force_fields
 
 
 def test_task_view_has_stable_fields(ctx):
@@ -14,8 +15,8 @@ def test_task_view_has_stable_fields(ctx):
 
 def test_inspect_actions_for_manual_required(ctx):
     tid = add_task(ctx, "in.txt", workflow="local_file")
-    ctx.repo.update_fields(
-        tid, {"task_status": TaskStatus.MANUAL_REQUIRED, "last_error": "missing source"}
+    force_fields(
+        ctx.repo, tid, {"task_status": TaskStatus.MANUAL_REQUIRED, "last_error": "missing source"}
     )
     view = inspect_view(ctx, ctx.repo.get_task(tid))
     assert view["status"] == TaskStatus.MANUAL_REQUIRED
@@ -26,7 +27,7 @@ def test_inspect_actions_for_manual_required(ctx):
 
 def test_inspect_actions_for_completed_is_empty(ctx):
     tid = add_task(ctx, "in.txt", workflow="local_file")
-    ctx.repo.update_fields(tid, {"task_status": TaskStatus.COMPLETED})
+    force_fields(ctx.repo, tid, {"task_status": TaskStatus.COMPLETED})
     view = inspect_view(ctx, ctx.repo.get_task(tid))
     assert view["available_actions"] == []
     assert "complete" in view["suggested_next_action"].lower()
@@ -34,6 +35,22 @@ def test_inspect_actions_for_completed_is_empty(ctx):
 
 def test_inspect_actions_for_paused(ctx):
     tid = add_task(ctx, "in.txt", workflow="local_file")
-    ctx.repo.update_fields(tid, {"task_status": TaskStatus.PAUSED})
+    force_fields(ctx.repo, tid, {"task_status": TaskStatus.PAUSED})
     view = inspect_view(ctx, ctx.repo.get_task(tid))
     assert "resume" in view["available_actions"]
+
+
+def test_a_waiting_task_offers_wake(ctx):
+    tid = add_task(ctx, "in.txt", workflow="local_file")
+    force_fields(ctx.repo, tid, {"next_retry_at": "2999-01-01 00:00:00"})
+    view = inspect_view(ctx, ctx.repo.get_task(tid))
+    assert view["available_actions"][0] == "wake"
+    assert "runspool wake" in view["suggested_next_action"]
+
+
+def test_partially_completed_has_no_actions_but_explains_itself(ctx):
+    tid = add_task(ctx, "in.txt", workflow="local_file")
+    force_fields(ctx.repo, tid, {"task_status": TaskStatus.PARTIALLY_COMPLETED})
+    view = inspect_view(ctx, ctx.repo.get_task(tid))
+    assert view["available_actions"] == []
+    assert "degraded" in view["suggested_next_action"]

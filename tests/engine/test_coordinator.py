@@ -6,6 +6,7 @@ from runspool.engine.step import Step, StepContext, StepResult
 from runspool.engine.worker_pool import WorkerPool
 from runspool.models import TaskStatus
 from tests.conftest import write_config
+from tests.support import force_fields
 
 
 class _Ok(Step):
@@ -98,7 +99,7 @@ def test_pause_pending_counts_toward_quota(tmp_path):
     busy = ctx.repo.create_task(
         input="busy", workflow="local_file", first_step="alpha", max_retries=0
     )
-    ctx.repo.update_fields(busy, {"task_status": TaskStatus.PAUSE_PENDING})
+    force_fields(ctx.repo, busy, {"task_status": TaskStatus.PAUSE_PENDING})
     queued = ctx.repo.create_task(
         input="q", workflow="local_file", first_step="alpha", max_retries=0
     )

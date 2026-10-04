@@ -20,14 +20,39 @@ class StepRunLog:
             return int(cur.lastrowid)
 
     def finish(
-        self, run_id: int, *, status: str, duration_ms: int, error: str | None = None
+        self,
+        run_id: int,
+        *,
+        status: str,
+        duration_ms: int,
+        error: str | None = None,
+        note: str | None = None,
     ) -> None:
         with self.db.connect() as conn:
             conn.execute(
                 "update step_runs set status = ?, finished_at = datetime('now'), "
-                "duration_ms = ?, error = ? where id = ?",
-                (status, duration_ms, error, run_id),
+                "duration_ms = ?, error = ?, note = ? where id = ?",
+                (status, duration_ms, error, note, run_id),
             )
+
+    def count_runs(self, task_id: int, step: str) -> int:
+        """How many times this task has run ``step`` so far (any outcome)."""
+        with self.db.connect() as conn:
+            row = conn.execute(
+                "select count(*) from step_runs where task_id = ? and step = ?", (task_id, step)
+            ).fetchone()
+            return int(row[0])
+
+    def has_degraded(self, task_id: int) -> bool:
+        """Whether the latest run of any step of this task was ``degraded``.
+
+        Only the latest run per step counts: a later successful re-run of a step
+        clears an earlier degraded run of it.
+        """
+        latest: dict[str, str] = {}
+        for run in self.list_for_task(task_id):  # ascending id: later runs overwrite
+            latest[run["step"]] = run["status"]
+        return any(status == "degraded" for status in latest.values())
 
     def close_running_for_task(self, task_id: int, *, status: str = "interrupted") -> int:
         """Close any still-"running" step_run rows for a task.

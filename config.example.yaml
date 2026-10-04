@@ -23,8 +23,8 @@ worker_pool:
 
 # Per-step concurrency quota. Default is 1 (steps of the same kind do not
 # overlap). Raise it for cheap, parallel-safe steps.
-concurrency:
-  # ingest_file: 4
+concurrency: {}
+#  ingest_file: 4
 
 # Workflows are ordered lists of step names. A task runs its steps in order,
 # pausing/retrying/terminating as directed. The built-in steps below need no
