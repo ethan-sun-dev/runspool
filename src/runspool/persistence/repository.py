@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -12,7 +13,7 @@ from runspool.persistence.event_log import Event, insert_event
 
 # Columns anyone may write with update_fields: a step's StepResult.updates, admin
 # commands, plugins. ``id`` and ``input`` are the task's immutable identity.
-UPDATABLE_COLUMNS = frozenset({"name", "priority", "max_retries", "progress"})
+UPDATABLE_COLUMNS = frozenset({"name", "priority", "max_retries", "progress", "metadata"})
 
 # Lifecycle columns. Only the state machine writes these, through transition();
 # claim_queued and heartbeat cover the two hot paths. Keeping them out of
@@ -31,6 +32,7 @@ LIFECYCLE_COLUMNS = frozenset(
         "last_error",
         "next_retry_at",
         "claim_token",
+        "approval_grant",
     }
 )
 
@@ -49,14 +51,61 @@ class TaskRepository:
         first_step: str,
         max_retries: int,
         name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        parent_task_id: int | None = None,
+        event: Event | None = None,
     ) -> int:
+        """Insert a QUEUED task (and ``event`` for it, in the same transaction)."""
         with self.db.connect() as conn:
             cur = conn.execute(
-                "insert into tasks (input, name, workflow, step, task_status, max_retries) "
-                "values (?,?,?,?,?,?)",
-                (input, name, workflow, first_step, TaskStatus.QUEUED, max_retries),
+                "insert into tasks (input, name, workflow, step, task_status, max_retries, "
+                "metadata, parent_task_id) values (?,?,?,?,?,?,?,?)",
+                (
+                    input,
+                    name,
+                    workflow,
+                    first_step,
+                    TaskStatus.QUEUED,
+                    max_retries,
+                    _dump(metadata),
+                    parent_task_id,
+                ),
             )
-            return int(cur.lastrowid)
+            task_id = int(cur.lastrowid)
+            if event is not None:
+                insert_event(conn, task_id, event)
+            return task_id
+
+    def list_children(self, parent_task_id: int) -> list[dict[str, Any]]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                "select * from tasks where parent_task_id = ? order by id asc", (parent_task_id,)
+            ).fetchall()
+            return [_row_to_dict(r) for r in rows]
+
+    def ensure_next_id(self, at_least: int) -> int:
+        """Make the next task id at least ``at_least`` (never lowers it).
+
+        For a new database that continues an older system's numbering. Returns the
+        id the next task will get.
+        """
+        with self.db.connect() as conn:
+            row = conn.execute("select seq from sqlite_sequence where name = 'tasks'").fetchone()
+            seq = int(row[0]) if row else 0
+            highest = int(conn.execute("select coalesce(max(id), 0) from tasks").fetchone()[0])
+            current = max(seq, highest)
+            if at_least - 1 > current:
+                if row:
+                    conn.execute(
+                        "update sqlite_sequence set seq = ? where name = 'tasks'", (at_least - 1,)
+                    )
+                else:
+                    conn.execute(
+                        "insert into sqlite_sequence (name, seq) values ('tasks', ?)",
+                        (at_least - 1,),
+                    )
+                current = at_least - 1
+            return current + 1
 
     def get_task(self, task_id: int) -> dict[str, Any] | None:
         with self.db.connect() as conn:
@@ -228,7 +277,7 @@ class TaskRepository:
             hint = f" ({', '.join(lifecycle)}: use the state machine)" if lifecycle else ""
             raise ValueError(f"columns not updatable: {sorted(bad)}{hint}")
         assignments = ", ".join(f"{col} = ?" for col in fields)
-        values = list(fields.values())
+        values = [_dump(v) if col == "metadata" else v for col, v in fields.items()]
         values.append(task_id)
         where = "id = ?"
         if token is not None:
@@ -243,4 +292,17 @@ class TaskRepository:
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    task = dict(row)
+    if "metadata" in task:
+        task["metadata"] = json.loads(task["metadata"]) if task["metadata"] else {}
+    return task
+
+
+def _dump(metadata: Any) -> str | None:
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be a JSON object (a dict)")
+    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)

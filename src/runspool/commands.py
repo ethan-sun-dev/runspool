@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from runspool.app import AppContext
 from runspool.models import EventType
+from runspool.persistence.event_log import Event
 
 
 class DuplicateTaskError(Exception):
@@ -22,21 +25,29 @@ def add_task(
     workflow: str,
     force: bool = False,
     name: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    parent_task_id: int | None = None,
 ) -> int:
     wf = ctx.config.workflow(workflow)  # unknown workflow raises KeyError
+    if parent_task_id is not None and ctx.repo.get_task(parent_task_id) is None:
+        raise KeyError(parent_task_id)
     if not force:
         existing = ctx.repo.find_active_by_input(input)
         if existing is not None:
             raise DuplicateTaskError(existing["id"])
-    task_id = ctx.repo.create_task(
+    message = "task created" if parent_task_id is None else f"task created from {parent_task_id}"
+    # The task, its metadata and its "created" event are written in one transaction:
+    # nothing can claim the task before what it needs to run is recorded with it.
+    return ctx.repo.create_task(
         input=input,
         workflow=workflow,
         first_step=wf.first_step(),
         max_retries=ctx.config.scheduler.max_retries,
         name=name,
+        metadata=metadata,
+        parent_task_id=parent_task_id,
+        event=Event(EventType.CREATED, step=wf.first_step(), message=message),
     )
-    ctx.log.add(task_id, EventType.CREATED, step=wf.first_step(), message="task created")
-    return task_id
 
 
 def pause_task(ctx: AppContext, task_id: int) -> None:

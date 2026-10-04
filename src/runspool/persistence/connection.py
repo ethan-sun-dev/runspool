@@ -7,29 +7,18 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from runspool.persistence.schema import SCHEMA
+from runspool.persistence.schema import migrate
 
 
 class Database:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
 
-    def init(self) -> None:
+    def init(self) -> int:
+        """Create or upgrade the schema; returns the schema version."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
-            conn.executescript(SCHEMA)
-            # Idempotent migrations: ``create table if not exists`` does not add
-            # columns to an existing table, so backfill optional columns here.
-            cols = [r[1] for r in conn.execute("pragma table_info(tasks)").fetchall()]
-            if "progress" not in cols:
-                conn.execute("alter table tasks add column progress text")
-            if "name" not in cols:
-                conn.execute("alter table tasks add column name text")
-            if "claim_token" not in cols:
-                conn.execute("alter table tasks add column claim_token text")
-            run_cols = [r[1] for r in conn.execute("pragma table_info(step_runs)").fetchall()]
-            if "note" not in run_cols:
-                conn.execute("alter table step_runs add column note text")
+            return migrate(conn)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

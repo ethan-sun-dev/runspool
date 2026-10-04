@@ -39,9 +39,29 @@ class TasksService:
         return self._store.repo.get_task(task_id)
 
     def add(
-        self, input: str, *, workflow: str, name: str | None = None, force: bool = False
+        self,
+        input: str,
+        *,
+        workflow: str,
+        name: str | None = None,
+        force: bool = False,
+        metadata: dict[str, Any] | None = None,
+        parent: int | None = None,
     ) -> int:
-        return commands.add_task(self._app, input, workflow=workflow, name=name, force=force)
+        """Create a task, e.g. a sub-flow of ``parent`` carrying what it needs in
+        ``metadata``. Task, metadata and its "created" event commit together."""
+        return commands.add_task(
+            self._app,
+            input,
+            workflow=workflow,
+            name=name,
+            force=force,
+            metadata=metadata,
+            parent_task_id=parent,
+        )
+
+    def children(self, task_id: int) -> list[dict[str, Any]]:
+        return self._store.repo.list_children(task_id)
 
     def pause(self, task_id: int) -> None:
         commands.pause_task(self._app, task_id)

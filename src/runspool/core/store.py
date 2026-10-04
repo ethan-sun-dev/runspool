@@ -36,7 +36,10 @@ class Store:
 def _apply(ctx, config) -> None:
     db = Database(ctx.config.database_path)
     db.init()
-    ctx.provide("store", Store(db))
+    store = Store(db)
+    if ctx.config.first_task_id is not None:
+        store.repo.ensure_next_id(ctx.config.first_task_id)
+    ctx.provide("store", store)
 
 
 plugin = Plugin(name="store-sqlite", apply=_apply, inject=["config"])

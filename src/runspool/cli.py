@@ -101,15 +101,36 @@ def add(
     workflow: str = typer.Option("local_file", "--workflow", "-w", help="Workflow name."),
     name: str = typer.Option(None, "--name", help="Human-readable task name."),
     force: bool = typer.Option(False, "--force", help="Allow a duplicate active task."),
+    parent: int = typer.Option(None, "--parent", help="Id of the task this one derives from."),
+    meta: list[str] = typer.Option(
+        None, "--meta", help="Metadata as KEY=VALUE (repeatable)."
+    ),
 ) -> None:
     """Add a task for an input."""
+    metadata: dict[str, str] = {}
+    for item in meta or []:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            typer.echo(f"--meta expects KEY=VALUE, got {item!r}")
+            raise typer.Exit(1)
+        metadata[key] = value
     try:
-        task_id = commands.add_task(_ctx(), input, workflow=workflow, name=name, force=force)
+        task_id = commands.add_task(
+            _ctx(),
+            input,
+            workflow=workflow,
+            name=name,
+            force=force,
+            metadata=metadata or None,
+            parent_task_id=parent,
+        )
     except commands.DuplicateTaskError as exc:
         typer.echo(f"active task already exists: {exc.existing_id} (use --force to add anyway)")
         raise typer.Exit(1) from exc
     except KeyError as exc:
-        typer.echo(f"undefined workflow: {exc.args[0] if exc.args else exc}")
+        missing = exc.args[0] if exc.args else exc
+        what = "parent task" if missing == parent else "workflow"
+        typer.echo(f"undefined {what}: {missing}")
         raise typer.Exit(1) from exc
     typer.echo(f"Created task {task_id}")
 

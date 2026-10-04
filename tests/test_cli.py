@@ -202,3 +202,28 @@ def test_wake_runs_a_deferred_task_now(tmp_path):
     woke = _invoke(cfg, "wake", "1")
     assert woke.exit_code == 0, woke.output
     assert json.loads(_invoke(cfg, "status", "1", "--json").output)["next_retry_at"] is None
+
+
+def test_add_a_sub_task_with_parent_and_metadata(tmp_path):
+    cfg = _init(tmp_path)
+    src = tmp_path / "a.txt"
+    src.write_text("hello world", encoding="utf-8")
+    _invoke(cfg, "add", str(src))
+    child = _invoke(
+        cfg, "add", "wechat:1", "--parent", "1", "--meta", "regen=yes", "--meta", "lang=zh"
+    )
+    assert child.exit_code == 0, child.output
+    view = json.loads(_invoke(cfg, "inspect", "2", "--json").output)
+    assert (view["parent_task_id"], view["metadata"]) == (1, {"regen": "yes", "lang": "zh"})
+    missing = _invoke(cfg, "add", "x", "--parent", "99")
+    assert missing.exit_code == 1 and "undefined parent task: 99" in missing.output
+    bad = _invoke(cfg, "add", "y", "--meta", "novalue")
+    assert bad.exit_code == 1 and "KEY=VALUE" in bad.output
+
+
+def test_first_task_id_continues_an_older_numbering(tmp_path):
+    cfg = _init(tmp_path)
+    cfg.write_text(cfg.read_text(encoding="utf-8") + "\nfirst_task_id: 700\n", encoding="utf-8")
+    src = tmp_path / "a.txt"
+    src.write_text("hello world", encoding="utf-8")
+    assert "Created task 700" in _invoke(cfg, "add", str(src)).output

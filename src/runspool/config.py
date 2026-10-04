@@ -70,6 +70,9 @@ class AppConfig(BaseModel):
     # under the config file's directory. Lets an example keep its custom steps
     # next to its config and load them regardless of the current directory.
     plugin_paths: list[str] = Field(default_factory=list)
+    # Number new tasks from here on (never lowers the numbering). For a database that
+    # continues an older system whose task ids are used as keys elsewhere.
+    first_task_id: int | None = Field(default=None, ge=1)
     steps: dict[str, StepPluginConfig] = Field(default_factory=dict)
 
     # Directory of the config file (set by load()); used to resolve plugin_paths.

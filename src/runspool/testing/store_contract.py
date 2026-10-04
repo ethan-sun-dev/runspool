@@ -242,6 +242,45 @@ class StoreContract:
         assert store.repo.update_fields(task_id, {"progress": "y"}, token="t1")
         assert store.repo.get_task(task_id)["progress"] == "y"
 
+    def test_metadata_and_parent_round_trip(self, store):
+        parent = _add(store, "p")
+        child = store.repo.create_task(
+            input="c",
+            workflow="wf",
+            first_step="a",
+            max_retries=3,
+            metadata={"library_dir": "2026-10/000614", "sources": [1, 2]},
+            parent_task_id=parent,
+        )
+        task = store.repo.get_task(child)
+        assert task["metadata"] == {"library_dir": "2026-10/000614", "sources": [1, 2]}
+        assert task["parent_task_id"] == parent
+        assert store.repo.get_task(parent)["metadata"] == {}
+        assert [t["id"] for t in store.repo.list_children(parent)] == [child]
+        store.repo.update_fields(child, {"metadata": {"regen": True}})
+        assert store.repo.get_task(child)["metadata"] == {"regen": True}
+        with pytest.raises(ValueError):
+            store.repo.update_fields(child, {"metadata": ["not", "an", "object"]})
+
+    def test_create_task_writes_its_event_with_it(self, store):
+        from runspool.models import EventType
+        from runspool.persistence.event_log import Event
+
+        task_id = store.repo.create_task(
+            input="i",
+            workflow="wf",
+            first_step="a",
+            max_retries=3,
+            event=Event(EventType.CREATED, step="a", message="task created"),
+        )
+        assert [e["event_type"] for e in store.log.list_for_task(task_id)] == ["created"]
+
+    def test_next_id_can_be_raised_but_never_lowered(self, store):
+        assert store.repo.ensure_next_id(615) == 615
+        assert _add(store) == 615
+        assert store.repo.ensure_next_id(10) == 616  # never lowers the numbering
+        assert _add(store) == 616
+
     def test_find_active_ignores_terminal_tasks(self, store):
         for status in (TaskStatus.COMPLETED, TaskStatus.PARTIALLY_COMPLETED, TaskStatus.TERMINATED):
             done = _add(store, "same")

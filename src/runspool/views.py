@@ -27,6 +27,8 @@ _TASK_FIELDS = (
     "progress",
     "last_error",
     "next_retry_at",
+    "parent_task_id",
+    "metadata",
     "created_at",
     "updated_at",
 )
@@ -142,6 +144,8 @@ def inspect_view(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
         "id": task["id"],
         "name": task.get("name"),
         "input": task["input"],
+        "parent_task_id": task.get("parent_task_id"),
+        "metadata": task.get("metadata") or {},
         "status": status,
         "workflow": task["workflow"],
         "current_step": task["step"],
