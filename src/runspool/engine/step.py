@@ -39,8 +39,8 @@ class StepResult:
     """Result of a step run: an optional message and task field updates.
 
     ``updates`` may only set non-lifecycle columns (name, priority, max_retries,
-    progress); status, step and lock fields belong to the state machine, so any
-    other key fails the step instead of silently corrupting state.
+    progress, metadata); status, step and lock fields belong to the state machine,
+    so any other key fails the step instead of silently corrupting state.
 
     ``degraded`` marks a best-effort step that returned without doing its job (an
     input was missing, an optional upload failed). The run is recorded as degraded

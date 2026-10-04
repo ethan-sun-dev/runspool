@@ -199,3 +199,7 @@ def test_concurrent_upgrades_of_an_old_database_all_succeed(tmp_path, wal):
     with multiprocessing.get_context("spawn").Pool(4) as pool:
         pool.map(_init, [path] * 40)  # raises if any init failed
     assert Database(path).init() == SCHEMA_VERSION
+
+
+def test_options_after_the_command_are_not_global():
+    assert str(_config_path_from(["status", "-c", "x.yaml"])) == "config.yaml"

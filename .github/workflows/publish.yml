@@ -18,8 +18,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      # RunSpool and its official plugin(s). Example plugins are not published.
       - name: Build distributions
-        run: uv build
+        run: |
+          uv build --package runspool -o dist
+          uv build --package runspool-wechat -o dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

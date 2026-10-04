@@ -37,3 +37,6 @@ examples/**/runspool.db
 .idea/
 .vscode/
 *.swp
+
+# Local list of downstream projects for scripts/check-downstream.sh
+.downstream

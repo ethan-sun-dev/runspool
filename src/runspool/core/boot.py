@@ -40,6 +40,7 @@ from runspool.kernel import (
 )
 from runspool.kernel.compose import load_patch_file
 from runspool.kernel.loader import bundle_layers, discover
+from runspool.kernel.plugin import validate_config
 
 log = logging.getLogger("runspool.boot")
 
@@ -104,7 +105,8 @@ def load_profile(path: Path | str) -> tuple[Profile, AppConfig]:
         # Relative to the profile, like plugin_paths: the same profile must mean the
         # same workspace whichever directory a command or the daemon starts in.
         settings["workspace_root"] = str(base_dir / root)
-    config = AppConfig.model_validate(settings)
+    # Same rule as plugin config: name the bad settings, never echo their values.
+    config = validate_config(AppConfig, settings)
     config.base_dir = base_dir
     return profile, config
 

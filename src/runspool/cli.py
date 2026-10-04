@@ -20,7 +20,7 @@ from runspool.display import (
     format_task_list,
 )
 from runspool.doctor import run_doctor
-from runspool.kernel import KernelError
+from runspool.kernel import ConfigError, KernelError
 from runspool.persistence.state_machine import IllegalTransition
 from runspool.runtime import (
     build_daemon,
@@ -49,12 +49,16 @@ def root(
 
 
 def _ctx():
+    path = Path(_STATE["config_path"])
     booted = _STATE.get("booted")
-    if booted is not None and booted[0] == Path(_STATE["config_path"]):
+    if booted is not None and booted[0] == path:
         return booted[1]  # booted by main() to collect plugin commands; reuse it
+    failed = _STATE.get("boot_error")
+    if failed is not None and failed[0] == path:
+        _fail(failed[1])  # main() already tried this profile: report, don't boot twice
     try:
-        return load_context(_STATE["config_path"])
-    except KernelError as exc:  # a required plugin failed, or the profile is malformed
+        return load_context(path)
+    except (KernelError, ConfigError) as exc:  # a required plugin failed, or bad config
         _fail(exc)
 
 
@@ -379,10 +383,12 @@ def doctor(json_output: bool = typer.Option(False, "--json", help="Emit JSON."))
     checks = run_doctor(_ctx())
     if json_output:
         _emit_json([{"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks])
-        return
-    for c in checks:
-        mark = "OK " if c.ok else "BAD"
-        typer.echo(f"[{mark}] {c.name}: {c.detail}")
+    else:
+        for c in checks:
+            mark = "OK " if c.ok else "BAD"
+            typer.echo(f"[{mark}] {c.name}: {c.detail}")
+    if not all(c.ok for c in checks):
+        raise typer.Exit(1)  # so scripts and agents can act on the result
 
 
 @app.command(name="daemon-status")
@@ -430,13 +436,19 @@ def daemon() -> None:
 
 
 def _config_path_from(argv: list[str]) -> Path:
-    for i, arg in enumerate(argv):
+    """The profile path among the global options (those before the command)."""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
         if arg in ("-c", "--config-path") and i + 1 < len(argv):
             return Path(argv[i + 1])
         if arg.startswith("--config-path="):
             return Path(arg.split("=", 1)[1])
         if arg.startswith("-c") and not arg.startswith("--") and len(arg) > 2:
             return Path(arg[2:])  # click's attached form: -cprofile.yaml
+        if not arg.startswith("-"):
+            break  # the command: options after it are the command's, not global
+        i += 1
     return Path(DEFAULT_CONFIG_FILENAME)
 
 
@@ -458,7 +470,7 @@ def build_app(config_path: Path | str) -> typer.Typer:
     try:
         ctx = load_context(path)
     except Exception as exc:  # noqa: BLE001 - reported by the command that needs it
-        _STATE["boot_error"] = exc
+        _STATE["boot_error"] = (path, exc)
         return combined
     _STATE["booted"] = (path, ctx)
     builtin = _builtin_names()
@@ -487,7 +499,8 @@ def main() -> None:
 
     argv = sys.argv[1:]
     cli = build_app(_config_path_from(argv))
-    error = _STATE.get("boot_error")
+    failed = _STATE.get("boot_error")
+    error = failed[1] if failed is not None else None
     command = _command_in(argv)
     if error is not None and command and command not in _builtin_names():
         # Probably a plugin command that did not load: say why, not "No such command".
@@ -495,7 +508,14 @@ def main() -> None:
             f"error: {command!r} is unavailable: the profile did not load: {error}", err=True
         )
         raise SystemExit(1)
-    cli()
+    try:
+        cli()
+    finally:
+        # Let plugins release what they hold (threads, sockets, files) when the
+        # command ends, not only when a daemon stops.
+        booted = _STATE.get("booted")
+        if booted is not None and booted[1].kernel is not None:
+            booted[1].kernel.dispose()
 
 
 def _builtin_names() -> set[str]:

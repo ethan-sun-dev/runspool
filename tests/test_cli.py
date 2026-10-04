@@ -227,3 +227,38 @@ def test_first_task_id_continues_an_older_numbering(tmp_path):
     src = tmp_path / "a.txt"
     src.write_text("hello world", encoding="utf-8")
     assert "Created task 700" in _invoke(cfg, "add", str(src)).output
+
+
+def test_the_example_config_loads(tmp_path):
+    from pathlib import Path
+
+    from runspool.core.boot import load_profile
+
+    example = Path(__file__).resolve().parents[1] / "config.example.yaml"
+    copy = tmp_path / "config.yaml"
+    copy.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
+    load_profile(copy)  # raises if the shipped example is invalid
+
+
+def test_doctor_exits_non_zero_when_a_check_fails(tmp_path):
+    cfg = _init(tmp_path)
+    cfg.write_text(
+        cfg.read_text(encoding="utf-8")
+        + "\nworkflows:\n  broken:\n    steps: [no_such_step]\n",
+        encoding="utf-8",
+    )
+    result = _invoke(cfg, "doctor", "--json")
+    assert result.exit_code == 1
+    assert any(not c["ok"] for c in json.loads(result.output))
+
+
+def test_bad_engine_settings_are_reported_without_echoing_values(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"workspace_root: {tmp_path / 'ws'}\nscheduler:\n  max_retries: sekrit-not-a-number\n",
+        encoding="utf-8",
+    )
+    result = _invoke(cfg, "status")
+    assert result.exit_code == 1
+    assert "max_retries" in result.output and "sekrit" not in result.output
+    assert "Traceback" not in result.output

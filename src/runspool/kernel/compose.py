@@ -17,8 +17,9 @@ A *layer* is a list of patches, applied in order over the entries built so far:
   A patch for an unknown id is skipped with a warning, so a layer written for one
   distribution does not break another.
 
-Layers are applied in the order given: bundle layers (in profile order), then the
-profile's own patch, then the user's, then command-line overlays. Later wins.
+Layers are applied in the order given; later wins. RunSpool's boot uses: bundle
+layers (in profile order), the profile's ``steps:`` map, the profile's own patch,
+then any overlays passed programmatically.
 
 Patch-layer algorithm adapted from Cordis's include loader (MIT, (c) 2021-present
 Shigma) and DeepSeek Harness's modifications to it (MIT, (c) 2026 DeepSeek); see

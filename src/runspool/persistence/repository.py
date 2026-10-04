@@ -259,7 +259,7 @@ class TaskRepository:
     def update_fields(
         self, task_id: int, fields: dict[str, Any], *, token: str | None = None
     ) -> bool:
-        """Write non-lifecycle columns (name, priority, max_retries, progress).
+        """Write non-lifecycle columns (name, priority, max_retries, progress, metadata).
 
         Status, step, locks and retry bookkeeping are lifecycle columns: they
         change only through the state machine (``transition``). Given a claim
