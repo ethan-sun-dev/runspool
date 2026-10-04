@@ -266,6 +266,7 @@ The events RunSpool itself dispatches:
 | --- | --- | --- |
 | `step/pre-execute` | waterfall | `(request, next)`: decides whether a claimed step may run |
 | `approval/request` | emit | `(task)`: a task has started waiting for approval |
+| `daemon/tick` | emit | `(tick)`: the daemon finished a scheduling round (`DaemonTick`: `round`, `now`) |
 | `internal/status` | emit | `(fiber)`: a plugin's lifecycle state changed (kernel internal) |
 
 `step/pre-execute` and `approval/request` are dispatched on the worker thread
@@ -334,6 +335,30 @@ notification plugin listens to it:
 
 ```python
 ctx.on("approval/request", lambda task: notify_owner(f"task {task['id']} awaits approval"))
+```
+
+### `daemon/tick`
+
+The resident daemon emits it once per round, after scheduling, with a
+`runspool.daemon.DaemonTick` (`round`: 1, 2, ... for this daemon run; `now`:
+`time.time()`). It is the place for periodic maintenance: sweeping a cache,
+rotating files, reporting. `run` and `run_until_idle` do not emit it.
+
+Listeners run on the daemon's thread between rounds, so keep them quick and
+throttle them yourself; hand long work to a thread. One that raises is logged and
+skipped. A daily sweep:
+
+```python
+last_day = None
+
+def sweep(tick):
+    global last_day
+    day = time.strftime("%Y-%m-%d", time.localtime(tick.now))
+    if day != last_day:  # once a day, and once after each daemon start
+        last_day = day
+        remove_older_than(cache_dir, days=7)
+
+ctx.on("daemon/tick", sweep)
 ```
 
 ## Side effects and approvals

@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-04
+
+### Added
+- **`daemon/tick` event**: the daemon emits it after every scheduling round with a
+  `DaemonTick` (`round`, `now`), so plugins can do periodic maintenance (sweep a
+  cache, rotate files) without a process of their own. A listener that raises is
+  logged and skipped; scheduling carries on.
+- **`default_workflow` setting**: the workflow `runspool add` uses without
+  `--workflow` (still `local_file` when unset). `runspool doctor` reports a
+  default that no workflow defines.
+
+### Fixed
+- `runspool.__version__` said 0.1.0; it now reads the installed version.
+- `runspool add` with an unknown workflow printed the error prefix twice
+  (`undefined workflow: undefined workflow: 'x'`).
+
 ## [0.2.0] - 2026-10-04
 
 RunSpool is now built from plugins on a small kernel. Everything the engine does —
@@ -151,6 +167,7 @@ Initial release.
 - Documentation (`docs/`), English + Simplified Chinese READMEs, and CI running
   ruff, pytest (Python 3.11/3.12/3.13), and an example smoke test.
 
-[Unreleased]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ethan-sun-dev/runspool/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ethan-sun-dev/runspool/releases/tag/v0.1.0

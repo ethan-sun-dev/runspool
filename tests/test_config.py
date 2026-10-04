@@ -48,3 +48,13 @@ def test_plugin_import_alias_and_base_dir(tmp_path):
     )
     assert cfg.steps["custom"].import_target == "mod:Cls"
     assert cfg.resolved_plugin_paths() == [tmp_path.resolve() / "steps"]
+
+
+def test_package_version_matches_the_project():
+    import tomllib
+    from pathlib import Path
+
+    import runspool
+
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text("utf-8"))
+    assert runspool.__version__ == project["project"]["version"]

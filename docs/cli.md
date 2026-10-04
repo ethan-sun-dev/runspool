@@ -46,7 +46,8 @@ runspool add ./chapter-2 --parent 1 --workflow translate
 
 - `<input>` — the task input (e.g. a file or directory path). An input that
   names an existing file or directory is stored as an absolute path.
-- `-w/--workflow NAME` — workflow to use (default `local_file`).
+- `-w/--workflow NAME` — workflow to use (default: the profile's `default_workflow`,
+  else `local_file`).
 - `--name NAME` — human-readable label (defaults to a value derived by the first
   step, e.g. the file stem).
 - `--meta KEY=VALUE` — task metadata, repeatable. Values are strings; steps read

@@ -6,7 +6,8 @@ Example plugins (`plugins/runspool-example-*`) are not published.
 ## 1. Prepare
 
 - Set the version in `pyproject.toml` (RunSpool) and in each published plugin's
-  `pyproject.toml` (`plugins/runspool-wechat`). Plugins declare the RunSpool range
+  `pyproject.toml` (`plugins/runspool-wechat`). A plugin with no changes may keep its
+  version: the publish workflow skips files already on PyPI. Plugins declare the RunSpool range
   they support, e.g. `runspool>=0.2,<0.3`; RunSpool refuses to load a plugin outside
   its range (a profile can exempt an exact version with `allow`).
 - Move the `[Unreleased]` notes in `CHANGELOG.md` under the new version and date,

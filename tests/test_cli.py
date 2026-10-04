@@ -186,7 +186,7 @@ def test_add_unknown_workflow(tmp_path):
     cfg = _init(tmp_path)
     result = _invoke(cfg, "add", "x", "--workflow", "nope")
     assert result.exit_code == 1
-    assert "undefined workflow" in result.output
+    assert result.output.strip() == "undefined workflow: nope"
 
 
 def test_wake_runs_a_deferred_task_now(tmp_path):
@@ -262,3 +262,43 @@ def test_bad_engine_settings_are_reported_without_echoing_values(tmp_path):
     assert result.exit_code == 1
     assert "max_retries" in result.output and "sekrit" not in result.output
     assert "Traceback" not in result.output
+
+
+def _profile_with_default(tmp_path, default):
+    cfg = tmp_path / "runspool.yaml"
+    cfg.write_text(
+        f"workspace_root: {tmp_path / 'ws'}\n"
+        f"default_workflow: {default}\n"
+        "workflows:\n  notes:\n    steps: [ingest_file, archive]\n",
+        encoding="utf-8",
+    )
+    return cfg
+
+
+def test_add_uses_the_profile_default_workflow(tmp_path):
+    cfg = _profile_with_default(tmp_path, "notes")
+    src = tmp_path / "a.txt"
+    src.write_text("hi", encoding="utf-8")
+    assert _invoke(cfg, "add", str(src)).exit_code == 0
+    assert json.loads(_invoke(cfg, "status", "1", "--json").output)["workflow"] == "notes"
+    doctor = _invoke(cfg, "doctor")
+    assert "default: notes" in doctor.output
+
+
+def test_an_undefined_default_workflow_is_reported(tmp_path):
+    cfg = _profile_with_default(tmp_path, "nope")
+    src = tmp_path / "a.txt"
+    src.write_text("hi", encoding="utf-8")
+    result = _invoke(cfg, "add", str(src))
+    assert result.exit_code == 1 and "undefined workflow: nope" in result.output
+    doctor = _invoke(cfg, "doctor")
+    assert doctor.exit_code == 1
+    assert "default_workflow 'nope' is not defined" in doctor.output
+
+
+def test_without_a_default_add_still_uses_local_file(tmp_path):
+    cfg = _init(tmp_path)
+    src = tmp_path / "a.txt"
+    src.write_text("hi", encoding="utf-8")
+    assert _invoke(cfg, "add", str(src)).exit_code == 0
+    assert json.loads(_invoke(cfg, "status", "1", "--json").output)["workflow"] == "local_file"
