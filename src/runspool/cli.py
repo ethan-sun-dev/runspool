@@ -126,9 +126,13 @@ def add(
             typer.echo(f"--meta expects KEY=VALUE, got {item!r}")
             raise typer.Exit(1)
         metadata[key] = value
+    ctx = _ctx()
+    if workflow is None:  # only when -w is absent: an empty -w "" is still an error
+        workflow = ctx.config.add_workflow()
+    if workflow not in ctx.config.workflows:
+        typer.echo(f"undefined workflow: {workflow}")
+        raise typer.Exit(1)
     try:
-        ctx = _ctx()
-        workflow = workflow or ctx.config.add_workflow()
         task_id = commands.add_task(
             ctx,
             input,
@@ -146,7 +150,7 @@ def add(
         if parent is not None and missing == parent:
             typer.echo(f"undefined parent task: {parent}")
         else:
-            typer.echo(f"undefined workflow: {workflow}")
+            typer.echo(f"error: missing {missing!r}")
         raise typer.Exit(1) from exc
     typer.echo(f"Created task {task_id}")
 

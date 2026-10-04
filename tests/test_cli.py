@@ -302,3 +302,12 @@ def test_without_a_default_add_still_uses_local_file(tmp_path):
     src.write_text("hi", encoding="utf-8")
     assert _invoke(cfg, "add", str(src)).exit_code == 0
     assert json.loads(_invoke(cfg, "status", "1", "--json").output)["workflow"] == "local_file"
+
+
+def test_an_empty_workflow_option_is_an_error_not_the_default(tmp_path):
+    cfg = _profile_with_default(tmp_path, "notes")
+    src = tmp_path / "a.txt"
+    src.write_text("hi", encoding="utf-8")
+    result = _invoke(cfg, "add", str(src), "--workflow", "")
+    assert result.exit_code == 1
+    assert result.output.strip() == "undefined workflow:"
