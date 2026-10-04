@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from types import MappingProxyType
 from typing import Any
 
 from runspool.clock import utcnow_text
@@ -199,7 +200,7 @@ class TaskRunner:
         A step refused, deferred or held for approval does not run and records no
         step run, so the attempt it is approved for is the one that runs next.
         """
-        request = GateRequest(task, step, attempt)
+        request = GateRequest(MappingProxyType(dict(task)), step, attempt)
         try:
             if self._gate is not None:
                 decision = self._gate(request)
@@ -227,7 +228,7 @@ class TaskRunner:
             if self._on_approval_asked is not None:
                 self._on_approval_asked(after)
         elif status == TaskStatus.MANUAL_REQUIRED:
-            self._notify(after, f"step {task['step']} not run: {after['last_error']}")
+            self._notify(after, f"step {task['step']} refused: {decision.reason}")
         return False
 
     def _report_success(

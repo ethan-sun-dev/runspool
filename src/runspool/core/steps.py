@@ -65,6 +65,15 @@ class StepsService:
     def __init__(self) -> None:
         self.registry = StepRegistry()
         self.guards: list[Callable[[Any], str | None]] = []
+        # Whether each step has side effects, recorded when it is registered (or, for
+        # a lazy step, when it is first resolved) so that nothing changing the step
+        # object later can take a step out of approval.
+        self._side_effects: dict[str, bool] = {}
+
+    def side_effect_of(self, name: str) -> bool:
+        if name not in self._side_effects:
+            self._side_effects[name] = bool(getattr(self.registry.get(name), "side_effect", False))
+        return self._side_effects[name]
 
     def for_context(self, ctx: Any) -> _BoundSteps:
         return _BoundSteps(self, ctx)
@@ -106,6 +115,9 @@ class _BoundSteps:
     def resolve_all(self) -> list[tuple[str, Exception]]:
         return self._service.resolve_all()
 
+    def side_effect_of(self, name: str) -> bool:
+        return self._service.side_effect_of(name)
+
     @property
     def guards(self) -> list[Callable[[Any], str | None]]:
         return list(self._service.guards)
@@ -132,10 +144,18 @@ class _BoundSteps:
         if not isinstance(instance, Step):
             raise TypeError(f"{instance!r} is not a runspool Step")
         registry = self._service.registry
+        side_effects = self._service._side_effects
 
         def register() -> Callable[[], None]:
             registry.register(instance)
-            return lambda: registry.unregister(instance.name)
+            if not isinstance(instance, LazyStep):
+                side_effects[instance.name] = bool(getattr(instance, "side_effect", False))
+
+            def unregister() -> None:
+                registry.unregister(instance.name)
+                side_effects.pop(instance.name, None)
+
+            return unregister
 
         return self._ctx.effect(register, label=f"step:{instance.name}")
 

@@ -61,6 +61,11 @@ class TasksService:
             parent_task_id=parent,
         )
 
+    def for_context(self, ctx: Any) -> TasksService | _BoundTasks:
+        if ctx.fiber.parent is None:
+            return self  # the application itself (CLI, embedding code), not a plugin
+        return _BoundTasks(self, ctx)
+
     def approve(self, task_id: int, *, by: str) -> None:
         """Approve the step a task is waiting on, for that one attempt."""
         commands.approve_task(self._app, task_id, by=by)
@@ -82,6 +87,24 @@ class TasksService:
 
     def retry(self, task_id: int) -> None:
         commands.retry_task(self._app, task_id)
+
+
+class _BoundTasks:
+    """The tasks service as one plugin sees it: approvals and rejections it makes are
+    recorded under its own name (``plugin:<entry>``), whatever ``by`` it passes."""
+
+    def __init__(self, service: TasksService, ctx: Any) -> None:
+        self._service = service
+        self._who = f"plugin:{ctx.fiber.name}"
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._service, name)
+
+    def approve(self, task_id: int, *, by: str = "") -> None:
+        self._service.approve(task_id, by=self._who + (f" ({by})" if by else ""))
+
+    def reject(self, task_id: int, *, by: str = "", reason: str = "") -> None:
+        self._service.reject(task_id, by=self._who + (f" ({by})" if by else ""), reason=reason)
 
 
 plugin = Plugin(

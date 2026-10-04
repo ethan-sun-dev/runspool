@@ -22,15 +22,21 @@ from runspool.persistence.state_machine import StateMachine
 class Gate:
     """The pre-execute gate (see runspool.engine.gate), in this order:
 
+    0. before any plugin runs, take what decides approval: whether the step has side
+       effects (as recorded when it was registered) and whether this exact attempt
+       was approved (from the task as stored). Listeners get a read-only task, and
+       nothing they change afterwards affects these;
     1. plugins' ``step/pre-execute`` waterfall listeners decide (default: allow);
        anything that is not a decision, or an exception, refuses the step;
-    2. a step with side effects, or an ``Ask``, needs approval unless this exact
-       attempt was approved; without an active approval service, or with policy
-       ``never``, the step is refused instead;
-    3. ``steps.guard`` checks may still refuse it.
+    2. ``steps.guard`` checks may refuse it (before anyone is asked to approve);
+    3. a step with side effects, or an ``Ask``, needs approval unless this attempt
+       was approved; with no active approval service, or policy ``never``, it is
+       refused instead.
 
-    Step 2 is RunSpool's own rule, applied after the plugins: no listener can wave a
-    step with side effects through.
+    Step 3 is RunSpool's own rule, applied after the plugins: no listener can wave a
+    step with side effects through. (Plugins are trusted code: one that writes to
+    the store directly, or approves tasks itself, is not stopped here; approvals by
+    a plugin are recorded under that plugin's name.)
     """
 
     def __init__(self, ctx: Any, steps: Any) -> None:
@@ -39,6 +45,11 @@ class Gate:
 
     def __call__(self, request: GateRequest) -> Decision:
         try:
+            side_effect = self._steps.side_effect_of(request.step.name)
+        except Exception as exc:  # noqa: BLE001 - unknown side effects fail closed
+            return Deny(f"cannot tell whether the step has side effects: {exc}")
+        granted = request.granted
+        try:
             decision = self._ctx.waterfall("step/pre-execute", request, default=Allow)
         except Exception as exc:  # noqa: BLE001 - a broken policy fails closed
             return Deny(f"pre-execute policy failed: {type(exc).__name__}: {exc}")
@@ -46,20 +57,23 @@ class Gate:
             return Deny(f"pre-execute policy returned {decision!r}, not a decision")
         if isinstance(decision, (Deny, Defer)):
             return decision
-        needs_approval = isinstance(decision, Ask) or getattr(request.step, "side_effect", False)
-        if needs_approval and not request.granted:
+        for guard in self._steps.guards:
+            try:
+                reason = guard(request)
+            except Exception as exc:  # noqa: BLE001 - a broken guard fails closed
+                return Deny(f"step guard failed: {type(exc).__name__}: {exc}")
+            if reason:
+                return Deny(reason)
+        if (isinstance(decision, Ask) or side_effect) and not granted:
             approval = self._ctx.get("approval")
             if approval is None:
                 return Deny("approval required, but no approval service is active")
-            if approval.policy == "never":
-                return Deny("approval required, and the approval policy is 'never'")
+            policy = getattr(approval, "policy", None)
+            if policy != "ask":
+                return Deny(f"approval required, and the approval policy is {policy!r}")
             if isinstance(decision, Ask):
                 return decision
             return Ask(f"{request.step.name} has side effects outside RunSpool")
-        for guard in self._steps.guards:
-            reason = guard(request)
-            if reason:
-                return Deny(reason)
         return Allow()
 
     def asked(self, task: dict[str, Any]) -> None:

@@ -581,6 +581,10 @@ class StateMachine:
             if status != TaskStatus.AWAITING_APPROVAL or kind != "asked":
                 raise IllegalTransition(task_id, status, "approve", allowed="awaiting_approval")
             step, _, attempt = rest.rpartition(":")
+            if step != task["step"]:
+                raise IllegalTransition(
+                    task_id, status, "approve", allowed="awaiting approval of its current step"
+                )
             fields = {
                 "task_status": TaskStatus.QUEUED,
                 "approval_grant": grant_value(step, int(attempt)),
@@ -643,14 +647,19 @@ class StateMachine:
                 raise IllegalTransition(
                     task_id, status, "set-step", allowed="failed or manual_required (use --force)"
                 )
-            if status in _EXECUTING or status in TERMINAL_STATUSES:
+            if (
+                status in _EXECUTING
+                or status in TERMINAL_STATUSES
+                or status == TaskStatus.AWAITING_APPROVAL
+            ):
                 raise IllegalTransition(
                     task_id,
                     status,
                     "set-step",
-                    allowed="not running and not finished (even with --force)",
+                    allowed="not running, awaiting approval or finished (even with --force)",
                 )
-            return {"step": step}, [
+            # An approval covered what came before it; moving the task voids it.
+            return {"step": step, "approval_grant": None}, [
                 Event(EventType.FIELD_SET, step=step, message=f"step set to {step}")
             ]
 

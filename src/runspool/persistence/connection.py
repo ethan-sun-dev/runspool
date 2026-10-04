@@ -15,22 +15,32 @@ class Database:
         self.path = Path(path)
 
     def init(self) -> int:
-        """Create or upgrade the schema; returns the schema version."""
+        """Create or upgrade the schema; returns the schema version.
+
+        The whole upgrade is one ``BEGIN IMMEDIATE`` transaction: concurrent openers
+        (a daemon and a CLI) take turns, and each re-reads the version inside it, so
+        a migration runs once and an interrupted one leaves nothing half-applied.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as conn:
-            return migrate(conn)
+        conn = sqlite3.connect(self.path, isolation_level=None)
+        try:
+            _configure(conn)
+            conn.execute("begin immediate")
+            try:
+                version = migrate(conn)
+            except BaseException:
+                conn.execute("rollback")
+                raise
+            conn.execute("commit")
+            return version
+        finally:
+            conn.close()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
-        conn.execute("pragma foreign_keys = on")
-        # WAL lets readers and a single writer proceed concurrently; busy_timeout
-        # makes a blocked writer wait for the lock instead of failing immediately
-        # with "database is locked". Both matter once the daemon's worker pool and
-        # the CLI write to the same database from multiple threads/processes.
-        conn.execute("pragma journal_mode = wal")
-        conn.execute("pragma busy_timeout = 5000")
+        _configure(conn)
         try:
             yield conn
             conn.commit()
@@ -39,3 +49,12 @@ class Database:
             raise
         finally:
             conn.close()
+
+
+def _configure(conn: sqlite3.Connection) -> None:
+    conn.execute("pragma foreign_keys = on")
+    # busy_timeout first: switching to WAL itself needs a lock, and without the
+    # timeout a second opener fails at once with "database is locked". WAL lets
+    # readers and a single writer proceed concurrently once it is on.
+    conn.execute("pragma busy_timeout = 5000")
+    conn.execute("pragma journal_mode = wal")

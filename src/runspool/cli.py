@@ -435,6 +435,8 @@ def _config_path_from(argv: list[str]) -> Path:
             return Path(argv[i + 1])
         if arg.startswith("--config-path="):
             return Path(arg.split("=", 1)[1])
+        if arg.startswith("-c") and not arg.startswith("--") and len(arg) > 2:
+            return Path(arg[2:])  # click's attached form: -cprofile.yaml
     return Path(DEFAULT_CONFIG_FILENAME)
 
 
@@ -450,15 +452,21 @@ def build_app(config_path: Path | str) -> typer.Typer:
     combined.registered_groups = list(app.registered_groups)
     path = Path(config_path)
     _STATE["booted"] = None
+    _STATE["boot_error"] = None
     if not path.exists():
         return combined
     try:
         ctx = load_context(path)
-    except Exception:  # noqa: BLE001 - reported by the command that needs the context
+    except Exception as exc:  # noqa: BLE001 - reported by the command that needs it
+        _STATE["boot_error"] = exc
         return combined
     _STATE["booted"] = (path, ctx)
-    builtin = {c.name or c.callback.__name__.replace("_", "-") for c in app.registered_commands}
-    for contributed in ctx.service("cli").commands:
+    builtin = _builtin_names()
+    try:
+        contributed_commands = ctx.service("cli").commands
+    except LookupError:  # the cli entry is disabled: built-in commands only
+        contributed_commands = []
+    for contributed in contributed_commands:
         if contributed.name in builtin:
             typer.echo(
                 f"warning: plugin {contributed.owner!r} command {contributed.name!r} "
@@ -477,7 +485,35 @@ def main() -> None:
     """Console entry point: ``runspool``."""
     import sys
 
-    build_app(_config_path_from(sys.argv[1:]))()
+    argv = sys.argv[1:]
+    cli = build_app(_config_path_from(argv))
+    error = _STATE.get("boot_error")
+    command = _command_in(argv)
+    if error is not None and command and command not in _builtin_names():
+        # Probably a plugin command that did not load: say why, not "No such command".
+        typer.echo(
+            f"error: {command!r} is unavailable: the profile did not load: {error}", err=True
+        )
+        raise SystemExit(1)
+    cli()
+
+
+def _builtin_names() -> set[str]:
+    return {c.name or c.callback.__name__.replace("_", "-") for c in app.registered_commands}
+
+
+def _command_in(argv: list[str]) -> str | None:
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+            continue
+        if arg in ("-c", "--config-path"):
+            skip = True
+            continue
+        if not arg.startswith("-"):
+            return arg
+    return None
 
 
 if __name__ == "__main__":

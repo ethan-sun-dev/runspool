@@ -82,7 +82,10 @@ def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) ->
 
 
 def _v1_baseline(conn: sqlite3.Connection) -> None:
-    conn.executescript(BASE_SCHEMA)
+    # One statement at a time: executescript would commit the surrounding transaction.
+    for statement in BASE_SCHEMA.split(";"):
+        if statement.strip():
+            conn.execute(statement)
     # Columns added before versioning existed: backfill them on older databases.
     _add_column(conn, "tasks", "progress", "text")
     _add_column(conn, "tasks", "name", "text")
