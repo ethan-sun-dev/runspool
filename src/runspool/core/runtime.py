@@ -90,6 +90,7 @@ class RuntimeService:
         self.store = store
         self.steps = steps
         self._startup = startup
+        self._ctx = ctx
         self.gate = Gate(ctx, steps) if ctx is not None else None
 
     def ensure_ready(self) -> None:
@@ -130,8 +131,16 @@ class RuntimeService:
         return Coordinator(store.repo, store.log, registry, runner, pool, self.config)
 
     def build_daemon(self) -> Daemon:
+        """The resident daemon. After each round it emits ``daemon/tick`` with a
+        :class:`~runspool.daemon.DaemonTick`, so plugins can do periodic maintenance
+        (sweep caches, rotate files). Listeners run on the daemon thread: keep them
+        quick, throttle them yourself (``tick.now``), and hand long work to a thread.
+        A listener that raises is logged and skipped. ``run`` / ``run_until_idle``
+        do not emit it: it belongs to the long-running process."""
         self.ensure_ready()
-        return Daemon(self.build_coordinator(), self.config)
+        ctx = self._ctx
+        on_tick = (lambda tick: ctx.emit("daemon/tick", tick)) if ctx is not None else None
+        return Daemon(self.build_coordinator(), self.config, on_tick=on_tick)
 
     def recover(self) -> None:
         any_workflow = next(iter(self.config.workflows))

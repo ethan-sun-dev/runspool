@@ -73,6 +73,9 @@ class AppConfig(BaseModel):
     # Number new tasks from here on (never lowers the numbering). For a database that
     # continues an older system whose task ids are used as keys elsewhere.
     first_task_id: int | None = Field(default=None, ge=1)
+    # The workflow `runspool add` uses when no --workflow is given (default: local_file).
+    # Plugins may contribute it, so it is checked by doctor rather than at load time.
+    default_workflow: str | None = Field(default=None, min_length=1)
     steps: dict[str, StepPluginConfig] = Field(default_factory=dict)
 
     # Directory of the config file (set by load()); used to resolve plugin_paths.
@@ -111,6 +114,10 @@ class AppConfig(BaseModel):
         if name not in self.workflows:
             raise KeyError(f"undefined workflow: {name!r}")
         return WorkflowDef(name=name, steps=self.workflows[name].steps)
+
+    def add_workflow(self) -> str:
+        """The workflow a new task gets when none is named."""
+        return self.default_workflow or "local_file"
 
     def step_quota(self, step: str) -> int:
         return self.concurrency.get(step, 1)

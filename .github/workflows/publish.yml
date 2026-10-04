@@ -18,11 +18,23 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      # skip-existing below must not hide a forgotten version bump: a release tag
+      # has to match the version being published.
+      - name: Check the tag matches the version
+        if: github.event_name == 'release'
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "v$version" = "${{ github.event.release.tag_name }}" || {
+            echo "release tag ${{ github.event.release.tag_name }} != pyproject version v$version"; exit 1; }
+
       # RunSpool and its official plugin(s). Example plugins are not published.
       - name: Build distributions
         run: |
           uv build --package runspool -o dist
           uv build --package runspool-wechat -o dist
 
+      # A release may bump only some packages: versions already on PyPI are skipped.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

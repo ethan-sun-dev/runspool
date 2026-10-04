@@ -72,7 +72,15 @@ class DoctorService:
         checks.append(Check("database", db_ok, db_detail))
 
         n_workflows = len(config.workflows)
-        checks.append(Check("workflows", n_workflows > 0, f"{n_workflows} defined"))
+        detail = f"{n_workflows} defined"
+        ok = n_workflows > 0
+        if config.default_workflow is not None:
+            if config.default_workflow in config.workflows:
+                detail += f"; default: {config.default_workflow}"
+            else:
+                ok = False
+                detail += f"; default_workflow {config.default_workflow!r} is not defined"
+        checks.append(Check("workflows", ok, detail))
 
         # Every step referenced by a workflow resolves (built-in or plugin), and every
         # lazily registered step imports. This catches typos and broken plugin imports

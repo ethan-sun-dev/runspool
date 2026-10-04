@@ -105,7 +105,12 @@ def init(
 @app.command()
 def add(
     input: str = typer.Argument(..., help="The task input (e.g. a file path)."),
-    workflow: str = typer.Option("local_file", "--workflow", "-w", help="Workflow name."),
+    workflow: str = typer.Option(
+        None,
+        "--workflow",
+        "-w",
+        help="Workflow name (default: the profile's default_workflow, else local_file).",
+    ),
     name: str = typer.Option(None, "--name", help="Human-readable task name."),
     force: bool = typer.Option(False, "--force", help="Allow a duplicate active task."),
     parent: int = typer.Option(None, "--parent", help="Id of the task this one derives from."),
@@ -121,9 +126,15 @@ def add(
             typer.echo(f"--meta expects KEY=VALUE, got {item!r}")
             raise typer.Exit(1)
         metadata[key] = value
+    ctx = _ctx()
+    if workflow is None:  # only when -w is absent: an empty -w "" is still an error
+        workflow = ctx.config.add_workflow()
+    if workflow not in ctx.config.workflows:
+        typer.echo(f"undefined workflow: {workflow}")
+        raise typer.Exit(1)
     try:
         task_id = commands.add_task(
-            _ctx(),
+            ctx,
             input,
             workflow=workflow,
             name=name,
@@ -136,8 +147,10 @@ def add(
         raise typer.Exit(1) from exc
     except KeyError as exc:
         missing = exc.args[0] if exc.args else exc
-        what = "parent task" if missing == parent else "workflow"
-        typer.echo(f"undefined {what}: {missing}")
+        if parent is not None and missing == parent:
+            typer.echo(f"undefined parent task: {parent}")
+        else:
+            typer.echo(f"error: missing {missing!r}")
         raise typer.Exit(1) from exc
     typer.echo(f"Created task {task_id}")
 

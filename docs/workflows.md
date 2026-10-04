@@ -42,6 +42,7 @@ concurrency:                         # per-step quota (default 1)
   ingest_file: 4
 
 first_task_id: 1000                  # number new tasks from here (never lowers it)
+default_workflow: local_file         # what `runspool add` uses without --workflow
 
 workflows:
   local_file:
@@ -67,6 +68,9 @@ patch: []                            # insert / modify / disable plugin entries
   (`ready/<id>/`). A relative path is resolved against the config file's
   directory, so the same profile means the same workspace whichever directory a
   command or the daemon starts in.
+- **default_workflow** — the workflow `runspool add` uses when `--workflow` is not
+  given (default `local_file`). It may name a workflow a plugin contributes;
+  `runspool doctor` reports it if no such workflow is defined.
 - **scheduler.max_retries** — the retry budget stamped onto each new task. Set it
   to `0` to make the first failure terminal (it becomes `manual_required`
   immediately) — useful when failures mean "bad input", not "transient glitch".

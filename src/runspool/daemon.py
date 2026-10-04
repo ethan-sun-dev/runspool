@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +29,32 @@ def read_pid(pid_file: Path) -> int | None:
         return None
 
 
+@dataclass(frozen=True)
+class DaemonTick:
+    """One daemon round, after its scheduling work: what ``daemon/tick`` carries.
+
+    ``round`` counts from 1 for each daemon run; ``now`` is ``time.time()``.
+    """
+
+    round: int
+    now: float
+
+
 class Daemon:
-    def __init__(self, coordinator: Coordinator, config: Any) -> None:
+    def __init__(
+        self,
+        coordinator: Coordinator,
+        config: Any,
+        *,
+        on_tick: Callable[[DaemonTick], None] | None = None,
+    ) -> None:
         self.coordinator = coordinator
         self.config = config
+        # Called once per round after scheduling (maintenance hooks). It runs on the
+        # daemon's own thread, so it must return quickly.
+        self.on_tick = on_tick
         self._stop = threading.Event()
+        self._round = 0
 
     def recover(self) -> None:
         # Startup recovery: recover_interrupted only changes task_status / lock
@@ -53,6 +77,16 @@ class Daemon:
         self.coordinator.reclaim_stale(timeout)
         self.coordinator.tick()
 
+    def _tick(self) -> None:
+        if self.on_tick is None:
+            return
+        self._round += 1
+        # Maintenance must never stop scheduling: log and carry on.
+        try:
+            self.on_tick(DaemonTick(round=self._round, now=time.time()))
+        except Exception:  # noqa: BLE001 - a broken hook must not kill the daemon
+            logger.exception("daemon maintenance hook failed; continuing")
+
     def request_stop(self) -> None:
         self._stop.set()
 
@@ -70,6 +104,7 @@ class Daemon:
                     self.run_once()
                 except Exception:  # noqa: BLE001 - tolerate transient errors
                     logger.exception("daemon tick failed; continuing")
+                self._tick()
                 self._stop.wait(timeout=interval)
         finally:
             self.coordinator.pool.shutdown(wait=True)

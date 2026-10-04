@@ -9,6 +9,11 @@ readable as JSON for scripts and AI agents.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+from importlib import metadata
+
+try:  # the installed distribution is the single source of the version
+    __version__ = metadata.version("runspool")
+except metadata.PackageNotFoundError:  # a bare source tree
+    __version__ = "0+unknown"
 
 __all__ = ["__version__"]
