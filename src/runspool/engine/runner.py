@@ -84,6 +84,13 @@ class TaskRunner:
             workflow=self.config.workflow(task["workflow"]),
             step_runs=self.step_runs,
         )
+        if task["terminate_requested"] or task["pause_requested"]:
+            # Requested while the job waited in the pool: honour it before starting
+            # the step (terminate, or pause in place) instead of running it first.
+            after = sm.finish_step(task_id, Deferred("not started"), token=claim_token)
+            if after is not None:
+                self._notify(after, f"{after['task_status']} before step {task['step']} started")
+            return
         step = self.registry.get(task["step"])
 
         # Heartbeat / progress: throttled centrally. No progress string refreshes
@@ -110,7 +117,7 @@ class TaskRunner:
         )
         # Clear leftover progress from the previous step so we never show a stale
         # 100% before the next step reports anything.
-        self.repo.update_fields(task_id, {"progress": None})
+        self.repo.update_fields(task_id, {"progress": None}, token=claim_token)
         run_id = self.step_runs.start(task_id, task["step"])
         t0 = time.monotonic()
         # Both the step run and persisting its updates are covered by failure
@@ -131,7 +138,7 @@ class TaskRunner:
                 stop_beat.set()
                 beat.join()
             if result.updates:
-                self.repo.update_fields(task_id, result.updates)
+                self.repo.update_fields(task_id, result.updates, token=claim_token)
         except StepDeferred as deferred:
             self.step_runs.finish(
                 run_id, status="deferred", duration_ms=_ms_since(t0), note=deferred.reason

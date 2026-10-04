@@ -48,6 +48,7 @@ _UNLOCK: dict[str, Any] = {
 _EXECUTING = (TaskStatus.RUNNING, TaskStatus.PAUSE_PENDING)
 _ALL = tuple(TaskStatus)
 _ATTEMPTS = 5
+_UNREAD = object()
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,16 @@ class StateMachine:
         task = self.repo.get_task(task_id)
         if task is None:
             return False
+        if task["task_status"] == TaskStatus.QUEUED and task["terminate_requested"]:
+            # A terminate request must never be outlived by another run of the step.
+            self._move(
+                task_id,
+                {"task_status": TaskStatus.TERMINATED, "terminate_requested": 0, **_UNLOCK},
+                expect=(TaskStatus.QUEUED,),
+                require={"terminate_requested": 1},
+                events=[Event(EventType.TERMINATED, step=task["step"])],
+            )
+            return False
         event = Event(EventType.CLAIMED, step=task["step"], message=f"claimed by {worker}")
         return self.repo.claim_queued(
             task_id, worker=worker, now=utcnow_text(), token=token, event=event
@@ -184,6 +195,10 @@ class StateMachine:
             require = {
                 "pause_requested": task["pause_requested"],
                 "terminate_requested": task["terminate_requested"],
+                # The failure path decides from these; a concurrent set-retries must
+                # make it decide again rather than be overwritten.
+                "retry_count": task["retry_count"],
+                "max_retries": task["max_retries"],
             }
             if token is not None:
                 require["claim_token"] = token
@@ -391,50 +406,60 @@ class StateMachine:
         )
 
     def recover_interrupted(self) -> None:
-        """After a crash, nothing is executing: settle every RUNNING / PAUSE_PENDING task.
-
-        The interrupted step is assumed not done. A requested terminate wins; a
-        requested pause pauses in place (the step re-runs on resume); otherwise the
-        task is requeued on the same step.
-        """
+        """After a crash, nothing is executing: settle every RUNNING / PAUSE_PENDING task."""
         for status in _EXECUTING:
             for task in self.repo.list_by_status(status):
-                self._close_running_step_run(task["id"])
-                if task["terminate_requested"]:
-                    fields = {
-                        "task_status": TaskStatus.TERMINATED,
-                        "terminate_requested": 0,
-                        "pause_requested": 0,
-                        **_UNLOCK,
-                    }
-                    event = Event(EventType.TERMINATED, step=task["step"])
-                elif task["pause_requested"] or status == TaskStatus.PAUSE_PENDING:
-                    fields = {"task_status": TaskStatus.PAUSED, "pause_requested": 0, **_UNLOCK}
-                    event = Event(EventType.PAUSED, step=task["step"], message="after restart")
-                else:
-                    fields = {"task_status": TaskStatus.QUEUED, **_UNLOCK}
-                    event = Event(
-                        EventType.RECLAIMED, step=task["step"], message="interrupted, requeued"
-                    )
-                self._move(task["id"], fields, expect=(status,), events=[event])
+                self._settle(task["id"], reason="interrupted", check_alive=False)
 
     def requeue_stale(self, task_id: int) -> None:
-        # Only reclaim if still RUNNING: between listing stale tasks and reclaiming,
-        # a worker may have finished. Clearing the claim token makes the stale
-        # worker's eventual finish_step a no-op.
-        task = self.repo.get_task(task_id)
-        if task is None or task["task_status"] != TaskStatus.RUNNING:
-            return
-        if self._move(
-            task_id,
-            {"task_status": TaskStatus.QUEUED, **_UNLOCK},
-            expect=(TaskStatus.RUNNING,),
-            require={"claim_token": task["claim_token"]},
-            events=[
-                Event(EventType.RECLAIMED, step=task["step"], message="heartbeat timeout, requeued")
-            ],
-        ):
-            self._close_running_step_run(task_id)
+        """Settle a task whose worker stopped heartbeating (RUNNING or PAUSE_PENDING).
+
+        If its heartbeat moves while we decide, the worker is alive after all and
+        the task is left alone. Clearing the claim token makes the stale worker's
+        eventual finish_step a no-op.
+        """
+        self._settle(task_id, reason="heartbeat timeout", check_alive=True)
+
+    def _settle(self, task_id: int, *, reason: str, check_alive: bool) -> bool:
+        """Release an executing task whose worker is gone. The interrupted step is
+        assumed not done: a requested terminate wins; a requested pause (or a task
+        that was already pausing) pauses in place, so the step re-runs on resume;
+        otherwise the task is requeued on the same step. Re-decides on contention."""
+        seen_heartbeat: Any = _UNREAD
+        for _ in range(_ATTEMPTS):
+            task = self.repo.get_task(task_id)
+            if task is None or task["task_status"] not in _EXECUTING:
+                return False
+            if seen_heartbeat is _UNREAD:
+                seen_heartbeat = task["heartbeat_at"]
+            elif check_alive and task["heartbeat_at"] != seen_heartbeat:
+                return False  # it heartbeated while we were deciding: alive after all
+            status, step = task["task_status"], task["step"]
+            if task["terminate_requested"]:
+                fields = {
+                    "task_status": TaskStatus.TERMINATED,
+                    "terminate_requested": 0,
+                    "pause_requested": 0,
+                    **_UNLOCK,
+                }
+                event = Event(EventType.TERMINATED, step=step, message=reason)
+            elif task["pause_requested"] or status == TaskStatus.PAUSE_PENDING:
+                fields = {"task_status": TaskStatus.PAUSED, "pause_requested": 0, **_UNLOCK}
+                event = Event(EventType.PAUSED, step=step, message=reason)
+            else:
+                fields = {"task_status": TaskStatus.QUEUED, **_UNLOCK}
+                event = Event(EventType.RECLAIMED, step=step, message=f"{reason}, requeued")
+            require = {
+                "pause_requested": task["pause_requested"],
+                "terminate_requested": task["terminate_requested"],
+                "claim_token": task["claim_token"],
+            }
+            if check_alive:
+                require["heartbeat_at"] = task["heartbeat_at"]
+            if self._move(task_id, fields, expect=(status,), require=require, events=[event]):
+                self._close_running_step_run(task_id)
+                return True
+        return False
 
     # -- user actions -------------------------------------------------------------
 
@@ -520,9 +545,12 @@ class StateMachine:
                 raise IllegalTransition(
                     task_id, status, "set-step", allowed="failed or manual_required (use --force)"
                 )
-            if status in _EXECUTING:
+            if status in _EXECUTING or status in TERMINAL_STATUSES:
                 raise IllegalTransition(
-                    task_id, status, "set-step", allowed="any state but running (even with --force)"
+                    task_id,
+                    status,
+                    "set-step",
+                    allowed="not running and not finished (even with --force)",
                 )
             return {"step": step}, [
                 Event(EventType.FIELD_SET, step=step, message=f"step set to {step}")

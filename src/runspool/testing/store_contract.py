@@ -222,10 +222,25 @@ class StoreContract:
         assert sorted(t["id"] for t in store.repo.list_due_failed()) == [due, unset]
 
     def test_stale_running_uses_the_heartbeat(self, store):
-        stale, fresh = _add(store, "a"), _add(store, "b")
+        stale, fresh, pausing = _add(store, "a"), _add(store, "b"), _add(store, "c")
         store.repo.claim_queued(stale, worker="w", now="2000-01-01 00:00:00")
         store.repo.claim_queued(fresh, worker="w", now=utcnow_text())
-        assert [t["id"] for t in store.repo.list_stale_running(60)] == [stale]
+        store.repo.claim_queued(pausing, worker="w", now="2000-01-01 00:00:00")
+        _set(store, pausing, task_status=TaskStatus.PAUSE_PENDING, pause_requested=1)
+        stale_ids = sorted(t["id"] for t in store.repo.list_stale_running(60))
+        assert stale_ids == [stale, pausing]
+
+    def test_claim_refuses_a_task_with_a_terminate_request(self, store):
+        task_id = _add(store)
+        _set(store, task_id, terminate_requested=1)
+        assert not store.repo.claim_queued(task_id, worker="w", now=NOW)
+
+    def test_update_fields_with_a_token_writes_only_for_that_claim(self, store):
+        task_id = _add(store)
+        store.repo.claim_queued(task_id, worker="w", now=NOW, token="t1")
+        assert not store.repo.update_fields(task_id, {"progress": "x"}, token="stale")
+        assert store.repo.update_fields(task_id, {"progress": "y"}, token="t1")
+        assert store.repo.get_task(task_id)["progress"] == "y"
 
     def test_find_active_ignores_terminal_tasks(self, store):
         for status in (TaskStatus.COMPLETED, TaskStatus.PARTIALLY_COMPLETED, TaskStatus.TERMINATED):

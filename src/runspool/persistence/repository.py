@@ -89,11 +89,12 @@ class TaskRepository:
             return [_row_to_dict(r) for r in rows]
 
     def list_stale_running(self, timeout_seconds: int) -> list[dict[str, Any]]:
+        """Executing tasks (RUNNING or PAUSE_PENDING) whose heartbeat is too old."""
         with self.db.connect() as conn:
             rows = conn.execute(
-                "select * from tasks where task_status = ? "
+                "select * from tasks where task_status in (?, ?) "
                 "and (heartbeat_at is null or heartbeat_at < datetime('now', ?))",
-                (TaskStatus.RUNNING, f"-{timeout_seconds} seconds"),
+                (TaskStatus.RUNNING, TaskStatus.PAUSE_PENDING, f"-{timeout_seconds} seconds"),
             ).fetchall()
             return [_row_to_dict(r) for r in rows]
 
@@ -129,7 +130,8 @@ class TaskRepository:
             cur = conn.execute(
                 "update tasks set task_status = ?, locked_by = ?, locked_at = ?, "
                 "heartbeat_at = ?, claim_token = ?, next_retry_at = null, "
-                "updated_at = datetime('now') where id = ? and task_status = ?",
+                "updated_at = datetime('now') "
+                "where id = ? and task_status = ? and terminate_requested = 0",
                 (TaskStatus.RUNNING, worker, now, now, token, task_id, TaskStatus.QUEUED),
             )
             if cur.rowcount != 1:
@@ -158,7 +160,7 @@ class TaskRepository:
         if not expect:
             raise ValueError("transition needs at least one expected status")
         bad = set(fields) - LIFECYCLE_COLUMNS - UPDATABLE_COLUMNS
-        bad |= set(require or {}) - LIFECYCLE_COLUMNS
+        bad |= set(require or {}) - LIFECYCLE_COLUMNS - UPDATABLE_COLUMNS
         if bad:
             raise ValueError(f"columns not writable by a transition: {sorted(bad)}")
         sets = ", ".join(f"{col} = ?" for col in fields)
@@ -205,17 +207,21 @@ class TaskRepository:
             cur = conn.execute(f"update tasks set {', '.join(sets)} where {where}", params)
             return cur.rowcount == 1
 
-    def update_fields(self, task_id: int, fields: dict[str, Any]) -> None:
+    def update_fields(
+        self, task_id: int, fields: dict[str, Any], *, token: str | None = None
+    ) -> bool:
         """Write non-lifecycle columns (name, priority, max_retries, progress).
 
         Status, step, locks and retry bookkeeping are lifecycle columns: they
-        change only through the state machine (``transition``).
+        change only through the state machine (``transition``). Given a claim
+        ``token``, writes only while that claim still holds the task (a worker's
+        own updates). Returns whether a row was written.
         """
         # Empty fields is a no-op; a missing task_id affects 0 rows by standard
         # SQL semantics (no error). Existence checks belong to the StateMachine;
         # the repository does pure CRUD only.
         if not fields:
-            return
+            return False
         bad = set(fields) - UPDATABLE_COLUMNS
         if bad:
             lifecycle = sorted(bad & LIFECYCLE_COLUMNS)
@@ -224,11 +230,16 @@ class TaskRepository:
         assignments = ", ".join(f"{col} = ?" for col in fields)
         values = list(fields.values())
         values.append(task_id)
+        where = "id = ?"
+        if token is not None:
+            where += " and claim_token = ?"
+            values.append(token)
         with self.db.connect() as conn:
-            conn.execute(
-                f"update tasks set {assignments}, updated_at = datetime('now') where id = ?",
+            cur = conn.execute(
+                f"update tasks set {assignments}, updated_at = datetime('now') where {where}",
                 values,
             )
+            return cur.rowcount == 1
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

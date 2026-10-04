@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from runspool.app import load_context
 from runspool.engine.registry import StepRegistry
 from runspool.engine.runner import TaskRunner
@@ -33,13 +35,27 @@ class _Defer(Step):
         raise StepDeferred()
 
 
-class _Stoppable(Step):
+class _Midway(Step):
+    """A step during whose run the user acts on the task (pause, terminate...)."""
+
     name = "alpha"
 
+    def __init__(self, act):
+        self.act = act
+        self.runner = None
+        self.saw_stop = None
+
     def run(self, ctx: StepContext) -> StepResult:
-        assert ctx.should_stop() is True
+        tid = ctx.task["id"]
+        self.act(_machine(self.runner, tid), tid)
+        self.saw_stop = ctx.should_stop()
         ctx.heartbeat()
-        return StepResult(message="returned after stop")
+        return StepResult(message="done")
+
+
+def _machine(runner, tid):
+    task = runner.repo.get_task(tid)
+    return StateMachine(runner.repo, runner.log, workflow=runner.config.workflow(task["workflow"]))
 
 
 class _BadUpdates(Step):
@@ -59,6 +75,8 @@ def _setup(tmp_path, step, *, steps=("alpha", "beta"), notifier=None):
     tid = ctx.repo.create_task(input="x", workflow="local_file", first_step="alpha", max_retries=2)
     sm = StateMachine(ctx.repo, ctx.log, workflow=ctx.config.workflow("local_file"))
     sm.claim(tid, worker="w1")
+    if isinstance(step, _Midway):
+        step.runner = runner
     return runner, ctx.repo, ctx.step_runs, tid
 
 
@@ -90,29 +108,32 @@ def test_defer_keeps_step(tmp_path):
 
 
 def test_terminate_flag_applied_after_step(tmp_path):
-    runner, repo, runs, tid = _setup(tmp_path, _Stoppable())
-    force_fields(repo, tid, {"terminate_requested": 1})
+    step = _Midway(lambda sm, tid: sm.request_terminate(tid))
+    runner, repo, runs, tid = _setup(tmp_path, step)
     runner.execute(tid)
+    assert step.saw_stop is True  # the step could see the request and stop early
     assert repo.get_task(tid)["task_status"] == TaskStatus.TERMINATED
 
 
 def test_terminate_wins_over_concurrent_pause_request(tmp_path):
-    # Regression: a task paused mid-step (pause_requested=1) and then terminated
-    # (terminate_requested=1) must end TERMINATED, not PAUSED. The runner checks
-    # terminate_requested before pause_requested, so the pause must not win.
-    runner, repo, runs, tid = _setup(tmp_path, _Ok())
-    force_fields(repo, tid, {"pause_requested": 1, "terminate_requested": 1})
+    # Regression: a task paused mid-step and then terminated must end TERMINATED,
+    # not PAUSED: terminate wins at the step boundary.
+    def pause_then_terminate(sm, tid):
+        sm.request_pause(tid)
+        sm.request_terminate(tid)
+
+    runner, repo, runs, tid = _setup(tmp_path, _Midway(pause_then_terminate))
     runner.execute(tid)
     task = repo.get_task(tid)
     assert task["task_status"] == TaskStatus.TERMINATED
-    assert task["step"] == "alpha"  # not advanced by pause_after_successful_step
+    assert task["step"] == "alpha"  # not advanced by the pause
 
 
 def test_pause_advances_then_pauses_so_step_is_not_rerun(tmp_path):
     # Pause requested mid-step: the step finishes, then the task pauses at the
     # NEXT step. Resuming must not re-run the already-completed step.
-    runner, repo, runs, tid = _setup(tmp_path, _Ok())  # workflow: alpha -> beta
-    force_fields(repo, tid, {"pause_requested": 1})
+    step = _Midway(lambda sm, tid: sm.request_pause(tid))
+    runner, repo, runs, tid = _setup(tmp_path, step)  # workflow: alpha -> beta
     runner.execute(tid)
     task = repo.get_task(tid)
     assert task["task_status"] == TaskStatus.PAUSED
@@ -125,10 +146,24 @@ def test_pause_advances_then_pauses_so_step_is_not_rerun(tmp_path):
 
 def test_pause_on_last_step_completes_instead_of_pausing(tmp_path):
     # There is no later step to pause before, so the workflow completes.
-    runner, repo, runs, tid = _setup(tmp_path, _Ok(), steps=("alpha",))
-    force_fields(repo, tid, {"pause_requested": 1})
+    step = _Midway(lambda sm, tid: sm.request_pause(tid))
+    runner, repo, runs, tid = _setup(tmp_path, step, steps=("alpha",))
     runner.execute(tid)
     assert repo.get_task(tid)["task_status"] == TaskStatus.COMPLETED
+
+
+@pytest.mark.parametrize("request_", ["pause", "terminate"])
+def test_a_request_made_before_the_step_starts_skips_the_step(tmp_path, request_):
+    # Requested while the job waited in the pool: the step does not run at all;
+    # a pause pauses in place, a terminate terminates.
+    runner, repo, runs, tid = _setup(tmp_path, _Ok())
+    sm = _machine(runner, tid)
+    sm.request_pause(tid) if request_ == "pause" else sm.request_terminate(tid)
+    runner.execute(tid)
+    task = repo.get_task(tid)
+    expected = TaskStatus.PAUSED if request_ == "pause" else TaskStatus.TERMINATED
+    assert (task["task_status"], task["step"]) == (expected, "alpha")
+    assert runs.list_for_task(tid) == []
 
 
 def test_bad_updates_fail_task(tmp_path):
