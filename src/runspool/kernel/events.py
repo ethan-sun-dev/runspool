@@ -7,9 +7,12 @@
 * ``waterfall`` around-middleware: each listener is called as ``listener(*args, next)``
                 and decides whether to call ``next()``. Returning without calling it
                 vetoes the rest of the chain. ``default()`` is the innermost result.
+                ``next()`` may be called at most once per listener: running the
+                downstream chain twice would, for example, execute a gated step twice.
 
 Registering a listener is an effect of the registering plugin's fiber, so it is
-removed automatically when that plugin unloads.
+removed automatically when that plugin unloads. A listener removed during a dispatch
+(its plugin disposed by an earlier listener) is skipped for the rest of it.
 
 Dispatch modes and ordering semantics adapted from Cordis (MIT, (c) Shigma); see
 THIRD_PARTY_NOTICES.md.
@@ -21,6 +24,8 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from runspool.kernel.errors import KernelError
+
 if TYPE_CHECKING:
     from runspool.kernel.fiber import Fiber
 
@@ -29,11 +34,12 @@ log = logging.getLogger("runspool.kernel.events")
 
 
 class _Listener:
-    __slots__ = ("callback", "fiber")
+    __slots__ = ("callback", "fiber", "active")
 
     def __init__(self, callback: Callable[..., Any], fiber: Fiber) -> None:
         self.callback = callback
         self.fiber = fiber
+        self.active = True
 
 
 class EventBus:
@@ -53,6 +59,7 @@ class EventBus:
                 listeners.append(listener)
 
             def unregister() -> None:
+                listener.active = False
                 current = self._listeners.get(event, [])
                 if listener in current:
                     current.remove(listener)
@@ -66,6 +73,8 @@ class EventBus:
 
     def emit(self, event: str, *args: Any) -> None:
         for entry in list(self._listeners.get(event, [])):
+            if not entry.active:
+                continue
             try:
                 entry.callback(*args)
             except Exception:  # noqa: BLE001 - observers must not break the emitter
@@ -73,6 +82,8 @@ class EventBus:
 
     def bail(self, event: str, *args: Any) -> Any:
         for entry in list(self._listeners.get(event, [])):
+            if not entry.active:
+                continue
             result = entry.callback(*args)
             if result is not None and result is not False:
                 return result
@@ -82,8 +93,22 @@ class EventBus:
         chain = list(self._listeners.get(event, []))
 
         def call(index: int) -> T:
+            while index < len(chain) and not chain[index].active:
+                index += 1
             if index == len(chain):
                 return default()
-            return chain[index].callback(*args, lambda: call(index + 1))
+            used = False
+
+            def next_() -> T:
+                nonlocal used
+                if used:
+                    raise KernelError(
+                        f"waterfall {event!r}: next() called more than once by a listener "
+                        f"of plugin {chain[index].fiber.name!r}"
+                    )
+                used = True
+                return call(index + 1)
+
+            return chain[index].callback(*args, next_)
 
         return call(0)

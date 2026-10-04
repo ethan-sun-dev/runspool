@@ -37,7 +37,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from runspool.kernel.compose import Composition, Entry, Layer, compose, load_patch_file
-from runspool.kernel.errors import ComposeError, StartupError
+from runspool.kernel.errors import ComposeError, KernelError, StartupError
 from runspool.kernel.fiber import Fiber, FiberState, Kernel
 
 PLUGIN_GROUP = "runspool.plugins"
@@ -50,27 +50,33 @@ def discover(group: str) -> dict[str, metadata.EntryPoint]:
     return {ep.name: ep for ep in metadata.entry_points(group=group)}
 
 
-def runtime_version() -> str:
+def runtime_version() -> str | None:
+    """The installed RunSpool version, or ``None`` when running from a bare source tree."""
     try:
         return metadata.version(RUNTIME_DIST)
-    except metadata.PackageNotFoundError:  # running from a source tree without install
-        return "0.0.0"
+    except metadata.PackageNotFoundError:
+        return None
 
 
 def check_compat(
     dist_name: str,
     dist_version: str,
     requires: Iterable[str] | None,
-    runtime: str,
+    runtime: str | None,
     allow: Collection[str] = (),
 ) -> str | None:
     """Return why ``dist_name`` is incompatible with RunSpool ``runtime``, or ``None``.
 
     Only an explicit requirement on ``runspool`` is checked; a package that does not
-    declare one is accepted. ``allow`` holds exact ``name@version`` exemptions.
+    declare one is accepted. A development, pre-release or local build of RunSpool
+    counts as the release it leads to (``0.2.0.dev3`` satisfies ``>=0.2``). An
+    unknown runtime version skips the check. ``allow`` holds exact ``name@version``
+    exemptions; names are compared in canonical form.
     """
+    if runtime is None:
+        return None
     try:
-        runtime_v = Version(runtime)
+        runtime_v = Version(Version(runtime).base_version)
     except InvalidVersion:
         return None
     for line in requires or ():
@@ -84,7 +90,7 @@ def check_compat(
             continue
         if req.specifier.contains(runtime_v, prereleases=True):
             return None
-        if f"{dist_name}@{dist_version}" in allow:
+        if _exempt(dist_name, dist_version, allow):
             return None
         return f"{dist_name} {dist_version} requires runspool{req.specifier}, running {runtime}"
     return None
@@ -133,7 +139,7 @@ class Loader:
     ) -> None:
         self.kernel = kernel
         self._plugins = dict(plugins) if plugins is not None else discover(PLUGIN_GROUP)
-        self._runtime = runtime or runtime_version()
+        self._runtime = runtime if runtime is not None else runtime_version()
         self._allow = set(allow)
         self._mounted: dict[str, tuple[Entry, Fiber | None, str | None]] = {}
 
@@ -149,7 +155,11 @@ class Loader:
             except _Skip as skip:
                 self._mounted[entry.id] = (entry, None, str(skip))
                 continue
-            fiber = self.kernel.root.plugin(plugin, entry.config, name=entry.id)
+            try:
+                fiber = self.kernel.root.plugin(plugin, entry.config, name=entry.id)
+            except KernelError as exc:  # not a plugin shape, or the kernel is shutting down
+                self._mounted[entry.id] = (entry, None, _describe(exc))
+                continue
             self._mounted[entry.id] = (entry, fiber, None)
         return self.report()
 
@@ -196,8 +206,8 @@ class Loader:
                 obj: Any = importlib.import_module(module_name)
                 for part in attr.split("."):
                     obj = getattr(obj, part)
-            except (ImportError, AttributeError) as exc:
-                raise _Skip(f"cannot import {ref!r}: {exc}") from exc
+            except Exception as exc:  # noqa: BLE001 - a broken module must not stop startup
+                raise _Skip(f"cannot import {ref!r}: {_describe(exc)}") from exc
             return obj
         ep = self._plugins.get(ref)
         if ep is None:
@@ -254,15 +264,16 @@ class Profile:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if not isinstance(data, Mapping):
             raise ComposeError(f"{path}: a profile must be a mapping")
-        for key in ("bundles", "required", "allow", "patch"):
-            if not isinstance(data.get(key, []), list):
+        lists = {key: data.get(key) or [] for key in ("bundles", "required", "allow", "patch")}
+        for key, value in lists.items():
+            if not isinstance(value, list):
                 raise ComposeError(f"{path}: {key} must be a list")
         return cls(
             path=path,
-            bundles=list(data.get("bundles", [])),
-            required=list(data.get("required", [])),
-            allow=list(data.get("allow", [])),
-            patch=list(data.get("patch", [])),
+            bundles=list(lists["bundles"]),
+            required=list(lists["required"]),
+            allow=list(lists["allow"]),
+            patch=list(lists["patch"]),
             settings={k: v for k, v in data.items() if k not in _PROFILE_KEYS},
         )
 
@@ -286,6 +297,15 @@ def compose_profile(
 
 class _Skip(Exception):
     pass
+
+
+def _exempt(dist_name: str, dist_version: str, allow: Collection[str]) -> bool:
+    wanted = (canonicalize_name(dist_name), dist_version)
+    for item in allow:
+        name, sep, version = item.rpartition("@")
+        if sep and (canonicalize_name(name), version) == wanted:
+            return True
+    return False
 
 
 def _describe(exc: BaseException) -> str:

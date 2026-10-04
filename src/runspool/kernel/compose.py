@@ -8,7 +8,8 @@ A *layer* is a list of patches, applied in order over the entries built so far:
 * ``{insert: [entry, ...]}``  appends new entries (a duplicate id is an error);
 * ``{id: x, ...fields}``      modifies entry ``x``:
     - ``config``   deep-merged: mappings merge key by key, anything else (lists
-                   included) replaces the old value;
+                   included) replaces the old value. ``config: null`` (often an
+                   empty YAML value by mistake) is ignored with a warning;
     - ``disabled`` replaces the flag (there is no "remove"; disable instead);
     - ``plugin``   is an identity assertion: if it differs from the entry's plugin
                    the patch is skipped with a warning.
@@ -114,7 +115,10 @@ def apply_patches(
             )
             continue
         if "config" in patch:
-            target.config = deep_merge(target.config, patch["config"])
+            if patch["config"] is None:
+                warnings.append(f"{where}: config: null for {entry_id!r} ignored")
+            else:
+                target.config = deep_merge(target.config, patch["config"])
         if "disabled" in patch:
             target.disabled = _flag(patch["disabled"], where)
     return result

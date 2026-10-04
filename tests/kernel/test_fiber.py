@@ -374,14 +374,3 @@ def test_kernel_dispose_unloads_everything_newest_first():
     kernel.dispose()
     assert log == ["load a", "load b", "unload b", "unload a"]
     assert kernel.fibers == []
-
-
-def test_plugin_cannot_dispose_itself_during_apply():
-    kernel = Kernel()
-
-    def suicidal(ctx, config):
-        ctx.fiber.dispose()
-
-    fiber = kernel.root.plugin(suicidal)
-    assert fiber.state is FiberState.FAILED
-    assert isinstance(fiber.error, KernelError)

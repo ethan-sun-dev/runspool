@@ -2,19 +2,27 @@
 
 Every loaded plugin runs in a :class:`Fiber`. A fiber:
 
-* waits (PENDING) until every service it ``inject``s is provided by an ACTIVE fiber;
+* waits (PENDING) until every service it ``inject``s is *usable* (see below);
 * then validates its config and calls ``apply`` (LOADING -> ACTIVE);
 * records every registration made during ``apply`` (or later while active) as an
-  *effect* with a disposer, and runs them in reverse order when it unloads;
+  *effect* with a disposer, and runs them in reverse order when it unloads; what
+  ``apply`` itself returns runs last;
 * rolls all of its effects back if ``apply`` raises (-> FAILED), without touching
   any other plugin;
-* reloads automatically when the identity of its providers changes: the set of
-  provider fibers is fingerprinted as an "epoch" string, and any change to it
-  unloads the fiber and loads it again against the new providers.
+* reloads automatically when the services it injects change: each provided service
+  registration gets a serial number, the injected registrations are fingerprinted
+  as an "epoch" string, and any change to it unloads the fiber and loads it again.
+  A provider that reloads in place therefore reloads its dependents too, and a
+  FAILED dependent is retried against the new registration.
 
-Providers count only once ACTIVE, so a provider whose ``apply`` is still running
-never wakes its dependents early. When a provider unloads, its dependents are
-unloaded first, while the provider's services are still usable.
+A service is usable by a consumer only when its provider and every ancestor of the
+provider are ACTIVE, except that a plugin and its own descendants may use what a
+LOADING ancestor already provides. A provider whose ``apply`` is still running
+never wakes outsiders early. When a provider unloads, its dependents are unloaded
+first, while the provider's services are still in place.
+
+Disposing a fiber that is mid-transition (from inside its own ``apply``, or from a
+disposer while it unloads) is deferred until the transition ends, never lost.
 
 The kernel is synchronous and single-threaded for lifecycle changes.
 
@@ -88,6 +96,7 @@ class _Impl:
     name: str
     value: Any
     fiber: Fiber
+    serial: int
 
 
 class Fiber:
@@ -114,6 +123,7 @@ class Fiber:
         self._reconciling = False
         self._dirty = False
         self._disposed = False
+        self._dispose_requested = False
         self._parent_effect: _Effect | None = None
 
     def __repr__(self) -> str:
@@ -134,7 +144,7 @@ class Fiber:
         return FiberState.PENDING
 
     def missing_services(self) -> list[str]:
-        """Injected services that have no ACTIVE provider right now."""
+        """Injected services that are not usable right now."""
         return [name for name in sorted(self.inject) if not self._kernel._usable(name, self)]
 
     def wait(self) -> Fiber:
@@ -142,6 +152,13 @@ class Fiber:
         if self.error is not None and self.state is FiberState.FAILED:
             raise self.error
         return self
+
+    def ancestors(self) -> Iterable[Fiber]:
+        """This fiber, its parent, and so on up to (and including) the root."""
+        fiber: Fiber | None = self
+        while fiber is not None:
+            yield fiber
+            fiber = fiber.parent
 
     # -- effects ------------------------------------------------------------------
 
@@ -156,16 +173,14 @@ class Fiber:
             raise InactiveEffectError(
                 f"plugin {self.name!r} is {self.state.value}; it cannot register {label!r}"
             )
-        result = body()
-        if result is None:
-            disposers: list[Disposer] = []
-        elif callable(result):
-            disposers = [result]
-        elif isinstance(result, Iterable):
-            disposers = list(result)
-        else:
-            raise KernelError(f"effect {label!r} returned {result!r}, not a disposer")
+        disposers = _disposers_of(body(), label)
         effect = _Effect(self, disposers, label)
+        if not self._accepts_effects():
+            # The body itself tore this fiber down; undo it now rather than leak it.
+            effect()
+            raise InactiveEffectError(
+                f"plugin {self.name!r} became {self.state.value} while registering {label!r}"
+            )
         self._effects.append(effect)
         return effect
 
@@ -178,7 +193,7 @@ class Fiber:
 
     def restart(self) -> None:
         """Unload (if loaded) and load again; also retries a FAILED fiber."""
-        if self._disposed:
+        if self._disposed or self._phase is not None:
             return
         if self._loaded_epoch is not None:
             self._unload()
@@ -186,15 +201,29 @@ class Fiber:
         self._reconcile()
 
     def dispose(self) -> None:
-        """Unload and permanently remove this fiber (and every child plugin)."""
+        """Unload and permanently remove this fiber (and every child plugin).
+
+        Called mid-transition (from inside its own ``apply``, or from one of its
+        disposers), the dispose happens as soon as that transition ends.
+        """
         if self._disposed:
             return
-        if self._phase is FiberState.LOADING:
-            raise KernelError(f"plugin {self.name!r} cannot be disposed from inside its apply")
+        if self._phase is not None:
+            self._dispose_requested = True
+            return
         if self._loaded_epoch is not None:
-            self._unload()
+            self._unload()  # finalizes the dispose itself if one is requested meanwhile
+            if self._disposed:
+                return
+        self._finalize_dispose()
+
+    def _finalize_dispose(self) -> None:
+        if self._disposed:
+            return
         self._disposed = True
-        self._kernel._fibers.remove(self)
+        self._dispose_requested = False
+        if self in self._kernel._fibers:
+            self._kernel._fibers.remove(self)
         if self._parent_effect is not None:
             self._parent_effect()
         self._kernel.events.emit("internal/status", self)
@@ -202,10 +231,9 @@ class Fiber:
     def _epoch(self) -> str | None:
         parts = []
         for name in sorted(self.inject):
-            impl = self._kernel._impls.get(name)
-            if impl is None or not self._kernel._usable(name, self):
+            if not self._kernel._usable(name, self):
                 return None
-            parts.append(f"{name}={impl.fiber.uid}")
+            parts.append(f"{name}={self._kernel._impls[name].serial}")
         return ";".join(parts)
 
     def _reconcile(self) -> None:
@@ -217,7 +245,7 @@ class Fiber:
             return
         self._reconciling = True
         try:
-            while True:
+            while not self._disposed:
                 self._dirty = False
                 desired = self._epoch()
                 if self._loaded_epoch is not None and desired != self._loaded_epoch:
@@ -262,34 +290,55 @@ class Fiber:
             self._store = {}
             self._phase = None
             self._kernel.events.emit("internal/status", self)
+            if self._dispose_requested:
+                self._finalize_dispose()
             return
         self._loaded_epoch = epoch
         self._phase = None
         self._kernel.events.emit("internal/status", self)
-        self._kernel._notify(self._kernel._names_provided_by(self))
+        if self._dispose_requested:
+            self._unload()
+            return
+        self._kernel._notify(self._kernel._names_provided_within(self))
 
     def _unload(self) -> None:
+        if self._phase is FiberState.UNLOADING or self._loaded_epoch is None:
+            return
         self._phase = FiberState.UNLOADING
         # Dependents unload first, while this fiber's services are still in place.
-        self._kernel._notify(self._kernel._names_provided_by(self))
+        self._kernel._notify(self._kernel._names_provided_within(self))
         self._run_disposers()
         self._store = {}
         self._loaded_epoch = None
         self._phase = None
         self._kernel.events.emit("internal/status", self)
+        if self._dispose_requested:
+            self._finalize_dispose()
 
     def _run_disposers(self) -> None:
         while self._effects:
             self._effects[-1]()
 
 
+def _disposers_of(result: Any, label: str) -> list[Disposer]:
+    if result is None:
+        return []
+    if callable(result):
+        return [result]
+    if isinstance(result, Iterable) and not isinstance(result, (str, bytes)):
+        disposers = list(result)
+        if all(callable(item) for item in disposers):
+            return disposers
+    raise KernelError(f"effect {label!r} returned {result!r}, not a disposer or disposers")
+
+
 class Context:
     """What a plugin sees: its services, events, and registration API.
 
-    Reading ``ctx.<name>`` returns a service the plugin declared in ``inject`` (or
-    one its own fiber, or an ancestor's, provides). Anything else raises
-    :class:`ServiceNotInjected`, so a plugin cannot reach a service it did not
-    declare. Use :meth:`get` for an optional dependency.
+    Reading ``ctx.<name>`` returns a service the plugin declared in ``inject``, or
+    one that this plugin or one of its (non-root) ancestors provides. Anything else
+    raises :class:`ServiceNotInjected`, so a plugin cannot reach a service it did
+    not declare. Use :meth:`get` for an optional dependency.
     """
 
     __slots__ = ("_kernel", "fiber")
@@ -304,14 +353,15 @@ class Context:
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
-        fiber: Fiber | None = self.fiber
-        while fiber is not None:
-            if name in fiber._store:
-                return fiber._store[name]
-            impl = self._kernel._impls.get(name)
-            if impl is not None and impl.fiber is fiber:
-                return impl.value
-            fiber = fiber.parent
+        if name in self.fiber._store:
+            return self.fiber._store[name]
+        impl = self._kernel._impls.get(name)
+        if impl is not None:
+            for fiber in self.fiber.ancestors():
+                if impl.fiber is fiber:
+                    return impl.value
+                if fiber.parent is self._kernel.root_fiber:
+                    break  # the root's services must be injected like anyone else's
         raise ServiceNotInjected(
             f"plugin {self.fiber.name!r} reads service {name!r} without declaring it in inject"
         )
@@ -329,11 +379,10 @@ class Context:
         return self._kernel._provide(self.fiber, name, value)
 
     def get(self, name: str) -> Any:
-        """Return a service if it is currently provided by an ACTIVE fiber, else ``None``."""
-        impl = self._kernel._impls.get(name)
-        if impl is None or not self._kernel._usable(name, self.fiber):
+        """Return a service if it is usable right now, else ``None``. No inject needed."""
+        if not self._kernel._usable(name, self.fiber):
             return None
-        return impl.value
+        return self._kernel._impls[name].value
 
     def effect(self, body: Callable[[], Any], label: str = "effect") -> Disposer:
         return self.fiber.effect(body, label)
@@ -356,6 +405,7 @@ class Kernel:
 
     def __init__(self) -> None:
         self._uids = itertools.count(1)
+        self._serials = itertools.count(1)
         self._impls: dict[str, _Impl] = {}
         self._fibers: list[Fiber] = []
         self.events = EventBus()
@@ -369,8 +419,13 @@ class Kernel:
         return list(self._fibers)
 
     def dispose(self) -> None:
-        """Unload every plugin, newest first."""
-        self.root_fiber._run_disposers()
+        """Unload every plugin, newest first. Plugins still loading finish, then go."""
+        root = self.root_fiber
+        root._phase = FiberState.UNLOADING
+        try:
+            root._run_disposers()
+        finally:
+            root._phase = None
 
     # -- internals used by Fiber / Context ----------------------------------------
 
@@ -394,12 +449,10 @@ class Kernel:
             raise ServiceConflict(
                 f"service {name!r} is already provided by plugin {existing.fiber.name!r}"
             )
+        impl = _Impl(name, value, fiber, next(self._serials))
 
         def register() -> Disposer:
-            impl = _Impl(name, value, fiber)
             self._impls[name] = impl
-            if fiber.state is FiberState.ACTIVE:
-                self._notify({name})
 
             def unregister() -> None:
                 if self._impls.get(name) is impl:
@@ -408,24 +461,33 @@ class Kernel:
 
             return unregister
 
-        return fiber.effect(register, label=f"provide:{name}")
+        undo = fiber.effect(register, label=f"provide:{name}")
+        # Notify only once the registration is recorded, so a dependent that tears the
+        # provider down in response also tears this service down.
+        self._notify({name})
+        return undo
 
     def _usable(self, name: str, consumer: Fiber) -> bool:
         impl = self._impls.get(name)
         if impl is None:
             return False
-        if impl.fiber.state is FiberState.ACTIVE:
-            return True
-        # A plugin (and its children) may use what it provides while it is loading.
-        ancestor: Fiber | None = consumer
-        while ancestor is not None:
-            if ancestor is impl.fiber and impl.fiber.state is FiberState.LOADING:
-                return True
-            ancestor = ancestor.parent
-        return False
+        lineage = set(consumer.ancestors())
+        for fiber in impl.fiber.ancestors():
+            state = fiber.state
+            if state is FiberState.ACTIVE:
+                continue
+            if state is FiberState.LOADING and fiber in lineage:
+                continue  # a plugin may use what its own loading ancestor provides
+            return False
+        return True
 
-    def _names_provided_by(self, fiber: Fiber) -> set[str]:
-        return {name for name, impl in self._impls.items() if impl.fiber is fiber}
+    def _names_provided_within(self, fiber: Fiber) -> set[str]:
+        """Services provided by ``fiber`` or any of its descendants."""
+        return {
+            name
+            for name, impl in self._impls.items()
+            if any(ancestor is fiber for ancestor in impl.fiber.ancestors())
+        }
 
     def _notify(self, names: set[str]) -> None:
         if not names:
