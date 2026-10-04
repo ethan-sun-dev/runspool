@@ -28,7 +28,12 @@ class AppContext:
     kernel: Kernel | None = None
 
     def state_machine(self, workflow_name: str) -> StateMachine:
-        return StateMachine(self.repo, self.log, workflow=self.config.workflow(workflow_name))
+        return StateMachine(
+            self.repo,
+            self.log,
+            workflow=self.config.workflow(workflow_name),
+            step_runs=self.step_runs,
+        )
 
     def service(self, name: str) -> Any:
         """A service of the booted kernel, as the root sees it."""

@@ -26,6 +26,7 @@ _TASK_FIELDS = (
     "max_retries",
     "progress",
     "last_error",
+    "next_retry_at",
     "created_at",
     "updated_at",
 )
@@ -39,8 +40,16 @@ _ACTIONS: dict[str, list[str]] = {
     TaskStatus.FAILED: ["retry", "set-step", "terminate"],
     TaskStatus.MANUAL_REQUIRED: ["retry", "set-step", "set-retries", "terminate"],
     TaskStatus.COMPLETED: [],
+    TaskStatus.PARTIALLY_COMPLETED: [],
     TaskStatus.TERMINATED: [],
 }
+
+
+def available_actions(task: dict[str, Any]) -> list[str]:
+    actions = list(_ACTIONS.get(task["task_status"], []))
+    if task["task_status"] == TaskStatus.QUEUED and task.get("next_retry_at"):
+        actions.insert(0, "wake")  # deferred with a delay: can be made runnable now
+    return actions
 
 
 def task_view(task: dict[str, Any]) -> dict[str, Any]:
@@ -78,6 +87,7 @@ def runs_view(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "status": r["status"],
             "duration_ms": r["duration_ms"],
             "error": r["error"],
+            "note": r.get("note"),
             "started_at": r["started_at"],
             "finished_at": r["finished_at"],
         }
@@ -95,6 +105,11 @@ def detail_view(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
 def _suggested_next_action(task: dict[str, Any]) -> str:
     status = task["task_status"]
     tid = task["id"]
+    if status == TaskStatus.QUEUED and task.get("next_retry_at"):
+        return (
+            f"Waiting until {task['next_retry_at']} UTC before trying {task['step']} again; "
+            f"run it sooner with `runspool wake {tid}`."
+        )
     if status == TaskStatus.QUEUED:
         return f"Advance with `runspool run`, or start the daemon. (task {tid})"
     if status == TaskStatus.RUNNING:
@@ -110,6 +125,11 @@ def _suggested_next_action(task: dict[str, Any]) -> str:
         return f"{err}. Resolve the cause, then run `runspool retry {tid}`."
     if status == TaskStatus.COMPLETED:
         return "Task is complete; no action needed."
+    if status == TaskStatus.PARTIALLY_COMPLETED:
+        return (
+            "Every step ran, but some reported they could not fully do their job; "
+            "see the notes on degraded step runs."
+        )
     if status == TaskStatus.TERMINATED:
         return "Task was terminated; create a new task to redo the work."
     return "No suggested action."
@@ -133,6 +153,7 @@ def inspect_view(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
         "recent_events": events_view(ctx.log.list_for_task(task["id"], limit=5)),
         "step_runs": runs_view(ctx.step_runs.list_for_task(task["id"])),
         "artifacts": list_artifacts(ctx.config, task),
-        "available_actions": _ACTIONS.get(status, []),
+        "next_retry_at": task.get("next_retry_at"),
+        "available_actions": available_actions(task),
         "suggested_next_action": _suggested_next_action(task),
     }

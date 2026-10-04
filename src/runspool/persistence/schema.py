@@ -20,7 +20,8 @@ create table if not exists tasks (
     next_retry_at text,
     created_at text not null default (datetime('now')),
     updated_at text not null default (datetime('now')),
-    progress text
+    progress text,
+    claim_token text
 );
 
 create table if not exists task_events (
@@ -42,7 +43,8 @@ create table if not exists step_runs (
     started_at text not null default (datetime('now')),
     finished_at text,
     duration_ms integer,
-    error text
+    error text,
+    note text
 );
 
 create index if not exists idx_tasks_status on tasks(task_status);

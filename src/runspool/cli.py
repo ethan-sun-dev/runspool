@@ -265,6 +265,12 @@ def retry(task_id: int = typer.Argument(...)) -> None:
     _guard(lambda: commands.retry_task(_ctx(), task_id), f"Requeued task {task_id}")
 
 
+@app.command()
+def wake(task_id: int = typer.Argument(...)) -> None:
+    """Run a deferred task now instead of waiting out its delay."""
+    _guard(lambda: commands.wake_task(_ctx(), task_id), f"Woke task {task_id}")
+
+
 @app.command(name="set-priority")
 def set_priority_cmd(
     task_id: int = typer.Argument(...), priority: int = typer.Argument(...)

@@ -25,6 +25,11 @@ class Database:
                 conn.execute("alter table tasks add column progress text")
             if "name" not in cols:
                 conn.execute("alter table tasks add column name text")
+            if "claim_token" not in cols:
+                conn.execute("alter table tasks add column claim_token text")
+            run_cols = [r[1] for r in conn.execute("pragma table_info(step_runs)").fetchall()]
+            if "note" not in run_cols:
+                conn.execute("alter table step_runs add column note text")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

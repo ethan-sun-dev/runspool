@@ -4,8 +4,7 @@
 from __future__ import annotations
 
 from runspool.app import AppContext
-from runspool.models import EventType, TaskStatus
-from runspool.persistence.state_machine import IllegalTransition
+from runspool.models import EventType
 
 
 class DuplicateTaskError(Exception):
@@ -62,31 +61,17 @@ def set_priority(ctx: AppContext, task_id: int, priority: int) -> None:
 
 
 def set_retries(ctx: AppContext, task_id: int, max_retries: int) -> None:
-    # Mirror the config model's ge=0 constraint: a negative cap would make
-    # fail()'s `retry_count > max_retries` check route the very first failure
-    # straight to manual_required, silently disabling retries.
     if max_retries < 0:
         raise ValueError(f"max-retries must be >= 0, got {max_retries}")
-    _require_task(ctx, task_id)
-    ctx.repo.update_fields(task_id, {"max_retries": max_retries, "retry_count": 0})
-
-
-_SET_STEP_ALLOWED = (TaskStatus.FAILED, TaskStatus.MANUAL_REQUIRED)
+    _sm(ctx, task_id).set_retries(task_id, max_retries)
 
 
 def set_step(ctx: AppContext, task_id: int, step: str, *, force: bool = False) -> None:
-    task = _require_task(ctx, task_id)
-    wf = ctx.config.workflow(task["workflow"])
-    if step not in wf.steps:
-        raise ValueError(f"step {step!r} is not part of workflow {wf.name!r}")
-    status = task["task_status"]
-    # Moving a running/queued task mid-flight, or rewinding a finished one, is a
-    # foot-gun; restrict to recovery states unless explicitly forced.
-    if not force and status not in _SET_STEP_ALLOWED:
-        raise IllegalTransition(
-            task_id, status, "set-step", allowed="failed or manual_required (use --force)"
-        )
-    ctx.repo.update_fields(task_id, {"step": step})
+    _sm(ctx, task_id).set_step(task_id, step, force=force)
+
+
+def wake_task(ctx: AppContext, task_id: int) -> None:
+    _sm(ctx, task_id).wake(task_id)
 
 
 def _require_task(ctx: AppContext, task_id: int) -> dict:

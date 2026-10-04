@@ -187,3 +187,18 @@ def test_add_unknown_workflow(tmp_path):
     result = _invoke(cfg, "add", "x", "--workflow", "nope")
     assert result.exit_code == 1
     assert "undefined workflow" in result.output
+
+
+def test_wake_runs_a_deferred_task_now(tmp_path):
+    from runspool.app import load_context
+    from tests.support import force_fields
+
+    cfg = _init(tmp_path)
+    src = tmp_path / "a.txt"
+    src.write_text("hello world", encoding="utf-8")
+    _invoke(cfg, "add", str(src))
+    assert _invoke(cfg, "wake", "1").exit_code == 1  # not waiting on anything
+    force_fields(load_context(cfg).repo, 1, {"next_retry_at": "2999-01-01 00:00:00"})
+    woke = _invoke(cfg, "wake", "1")
+    assert woke.exit_code == 0, woke.output
+    assert json.loads(_invoke(cfg, "status", "1", "--json").output)["next_retry_at"] is None

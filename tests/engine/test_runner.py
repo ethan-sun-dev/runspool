@@ -9,6 +9,7 @@ from runspool.engine.step import Step, StepContext, StepDeferred, StepResult
 from runspool.models import TaskStatus
 from runspool.persistence.state_machine import StateMachine
 from tests.conftest import write_config
+from tests.support import force_fields
 
 
 class _Ok(Step):
@@ -90,7 +91,7 @@ def test_defer_keeps_step(tmp_path):
 
 def test_terminate_flag_applied_after_step(tmp_path):
     runner, repo, runs, tid = _setup(tmp_path, _Stoppable())
-    repo.update_fields(tid, {"terminate_requested": 1})
+    force_fields(repo, tid, {"terminate_requested": 1})
     runner.execute(tid)
     assert repo.get_task(tid)["task_status"] == TaskStatus.TERMINATED
 
@@ -100,7 +101,7 @@ def test_terminate_wins_over_concurrent_pause_request(tmp_path):
     # (terminate_requested=1) must end TERMINATED, not PAUSED. The runner checks
     # terminate_requested before pause_requested, so the pause must not win.
     runner, repo, runs, tid = _setup(tmp_path, _Ok())
-    repo.update_fields(tid, {"pause_requested": 1, "terminate_requested": 1})
+    force_fields(repo, tid, {"pause_requested": 1, "terminate_requested": 1})
     runner.execute(tid)
     task = repo.get_task(tid)
     assert task["task_status"] == TaskStatus.TERMINATED
@@ -111,7 +112,7 @@ def test_pause_advances_then_pauses_so_step_is_not_rerun(tmp_path):
     # Pause requested mid-step: the step finishes, then the task pauses at the
     # NEXT step. Resuming must not re-run the already-completed step.
     runner, repo, runs, tid = _setup(tmp_path, _Ok())  # workflow: alpha -> beta
-    repo.update_fields(tid, {"pause_requested": 1})
+    force_fields(repo, tid, {"pause_requested": 1})
     runner.execute(tid)
     task = repo.get_task(tid)
     assert task["task_status"] == TaskStatus.PAUSED
@@ -125,7 +126,7 @@ def test_pause_advances_then_pauses_so_step_is_not_rerun(tmp_path):
 def test_pause_on_last_step_completes_instead_of_pausing(tmp_path):
     # There is no later step to pause before, so the workflow completes.
     runner, repo, runs, tid = _setup(tmp_path, _Ok(), steps=("alpha",))
-    repo.update_fields(tid, {"pause_requested": 1})
+    force_fields(repo, tid, {"pause_requested": 1})
     runner.execute(tid)
     assert repo.get_task(tid)["task_status"] == TaskStatus.COMPLETED
 
@@ -170,7 +171,8 @@ def test_runner_heartbeats_during_step_without_step_cooperation(tmp_path):
     )
     tid = ctx.repo.create_task(input="x", workflow="local_file", first_step="alpha", max_retries=0)
     captured["tid"] = tid
-    ctx.repo.update_fields(tid, {"heartbeat_at": "2000-01-01 00:00:00"})
+    ctx.state_machine("local_file").claim(tid, worker="w1")  # the runner executes claimed tasks
+    force_fields(ctx.repo, tid, {"heartbeat_at": "2000-01-01 00:00:00"})
     runner.execute(tid)
     assert observed.get("beat") is True
 

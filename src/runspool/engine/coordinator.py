@@ -5,7 +5,9 @@ them to the worker pool."""
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
+from runspool.clock import utcnow_text
 from runspool.engine.registry import StepRegistry
 from runspool.engine.runner import TaskRunner
 from runspool.engine.worker_pool import WorkerPool
@@ -46,7 +48,12 @@ class Coordinator:
             for task in self.repo.list_by_status(status):
                 load[task["step"]] = load.get(task["step"], 0) + 1
 
+        now = utcnow_text()
         for task in self.repo.list_by_status(TaskStatus.QUEUED):
+            # A deferred task waits until its next_retry_at: skip it silently (no
+            # claim, no event) so slow polling does not churn the event log.
+            if task["next_retry_at"] and task["next_retry_at"] > now:
+                continue
             step_name = task["step"]
             if load.get(step_name, 0) >= self.config.step_quota(step_name):
                 continue
@@ -63,10 +70,16 @@ class Coordinator:
                 sm.skip_step(task["id"])
                 progressed += 1
                 continue
-            if sm.claim(task["id"], worker=f"pool-{task['id']}"):
+            # Each claim carries a fresh token, checked by the runner before it starts
+            # and by every transition it makes: a job that sat in a backlogged pool
+            # while its task was reclaimed and re-claimed changes nothing.
+            token = uuid4().hex
+            if sm.claim(task["id"], worker=f"pool-{task['id']}", token=token):
                 load[step_name] = load.get(step_name, 0) + 1
                 task_id = task["id"]
-                self.pool.submit(lambda tid=task_id: self.runner.execute(tid))
+                self.pool.submit(
+                    lambda tid=task_id, tok=token: self.runner.execute(tid, claim_token=tok)
+                )
                 progressed += 1
         return progressed
 
