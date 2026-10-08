@@ -442,12 +442,28 @@ def doctor(json_output: bool = typer.Option(False, "--json", help="Emit JSON."))
 
 @app.command(name="daemon-status")
 def daemon_status_cmd(json_output: bool = typer.Option(False, "--json", help="Emit JSON.")) -> None:
-    """Report whether the daemon is running."""
+    """Report whether the daemon is running (exit 1 if its process is suspended)."""
     s = daemon_status(_ctx())
     if json_output:
         _emit_json(s)
-        return
-    typer.echo(f"daemon running (pid={s['pid']})" if s["running"] else "daemon not running")
+    elif s.get("stopped"):
+        group = _process_group(s["pid"])
+        typer.echo(
+            f"daemon process exists (pid={s['pid']}) but is STOPPED: it schedules nothing.\n"
+            f"Resume it with `kill -CONT -{group}`, or stop it (`kill -TERM -{group}; "
+            f"kill -CONT -{group}`) and start it again with stdin from /dev/null."
+        )
+    else:
+        typer.echo(f"daemon running (pid={s['pid']})" if s["running"] else "daemon not running")
+    if s.get("stopped"):
+        raise typer.Exit(1)
+
+
+def _process_group(pid: int) -> int:
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return pid
 
 
 @app.command(name="daemon-stop")

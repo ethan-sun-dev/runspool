@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -188,10 +189,13 @@ class RuntimeService:
         return Path(self.config.runtime_dir) / "daemon.pid"
 
     def daemon_status(self) -> dict[str, Any]:
+        """``running``: the daemon process exists. ``stopped``: it exists but is
+        suspended (SIGSTOP / SIGTTIN, e.g. a background job that touched the
+        terminal): it holds its tasks and schedules nothing until resumed."""
         pid = read_pid(self.pid_file())
         if pid is not None and _pid_alive(pid):
-            return {"running": True, "pid": pid}
-        return {"running": False, "pid": None}
+            return {"running": True, "pid": pid, "stopped": _pid_state(pid) in ("T", "t")}
+        return {"running": False, "pid": None, "stopped": False}
 
     def request_daemon_stop(self) -> bool:
         status = self.daemon_status()
@@ -199,6 +203,27 @@ class RuntimeService:
             return False
         os.kill(status["pid"], signal.SIGTERM)
         return True
+
+
+def _pid_state(pid: int) -> str | None:
+    """The process state letter (``R``, ``S``, ``T`` ...), or ``None`` if it cannot tell."""
+    try:  # Linux
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        pass
+    try:  # macOS / BSD
+        out = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    state = out.stdout.strip()
+    return state[0] if state else None
 
 
 def _pid_alive(pid: int) -> bool:

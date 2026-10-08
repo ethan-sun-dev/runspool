@@ -81,7 +81,10 @@ Run a resident loop in the foreground (Ctrl-C or SIGTERM to stop). Use for
 long-running or deferred work. It refuses to start if a daemon is already
 running, or for the same plugin reasons as `run`. Companion commands:
 
-- `runspool daemon-status [--json]` — is a daemon running, and its PID.
+- `runspool daemon-status [--json]` — is a daemon running, and its PID. If its
+  process exists but is suspended (state `T`: SIGSTOP, or SIGTTIN when a background
+  job touched the terminal) it says so and exits 1: such a daemon holds its tasks
+  and schedules nothing. JSON: `{"running", "pid", "stopped"}`.
 - `runspool daemon-stop` — signal a running daemon to stop.
 
 ## Observing

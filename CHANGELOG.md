@@ -12,6 +12,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--all`, `--active` (unfinished only) and `--status` (repeatable).
   `status --json` still lists every task unless a filter is given.
 
+- `runspool daemon-status` reports a daemon whose process is suspended (state `T`)
+  and exits 1; previously a stopped daemon showed as running. JSON gains `stopped`.
+
 ### Fixed
 - The daemon points its stdin at /dev/null. Started as a background job
   (`nohup runspool daemon &`; macOS nohup keeps the terminal as stdin), a tool a step

@@ -1,6 +1,8 @@
 """CLI integration tests via Typer's CliRunner."""
 
 import json
+import signal
+import time
 
 from typer.testing import CliRunner
 
@@ -406,3 +408,49 @@ def test_the_daemon_command_detaches_stdin(tmp_path, monkeypatch):
     result = _invoke(cfg, "daemon")
     assert result.exit_code == 0, result.output
     assert calls == ["detached", "run"]
+
+
+def test_daemon_status_reports_a_suspended_daemon(tmp_path, monkeypatch):
+    """A daemon stopped by SIGTTIN looks alive (its pid exists) but schedules nothing."""
+    import os
+
+    import runspool.core.runtime as rt
+    from runspool.app import load_context
+
+    cfg = _init(tmp_path)
+    pid_file = load_context(cfg).service("runtime").pid_file()
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")  # an alive pid
+
+    monkeypatch.setattr(rt, "_pid_state", lambda pid: "S")
+    ok = _invoke(cfg, "daemon-status")
+    assert ok.exit_code == 0 and ok.output.startswith("daemon running")
+    assert json.loads(_invoke(cfg, "daemon-status", "--json").output)["stopped"] is False
+
+    monkeypatch.setattr(rt, "_pid_state", lambda pid: "T")
+    stopped = _invoke(cfg, "daemon-status")
+    assert stopped.exit_code == 1
+    assert "STOPPED" in stopped.output and "kill -CONT -" in stopped.output
+    data = json.loads(_invoke(cfg, "daemon-status", "--json").output)
+    assert data == {"running": True, "pid": os.getpid(), "stopped": True}
+
+
+def test_pid_state_reads_a_real_process():
+    import os
+    import subprocess
+    import sys
+
+    from runspool.core.runtime import _pid_state
+
+    assert _pid_state(os.getpid()) in ("R", "S", "U", "D")
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        os.kill(child.pid, signal.SIGSTOP)
+        for _ in range(50):
+            if _pid_state(child.pid) == "T":
+                break
+            time.sleep(0.05)
+        assert _pid_state(child.pid) == "T"
+    finally:
+        os.kill(child.pid, signal.SIGKILL)
+        child.wait()
