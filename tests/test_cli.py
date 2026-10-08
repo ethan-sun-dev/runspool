@@ -366,3 +366,43 @@ def test_status_json_still_lists_everything_unless_asked(tmp_path):
     assert [t["id"] for t in newest] == [28, 29, 30]
     active = json.loads(_invoke(cfg, "status", "--json", "--active").output)
     assert [t["id"] for t in active] == [2, 3]
+
+
+def test_detach_stdin_points_fd0_at_dev_null():
+    """Children of the daemon must not inherit a terminal as stdin (ffmpeg reads it, and
+    a background job that reads the terminal is stopped by SIGTTIN, daemon included)."""
+    import subprocess
+    import sys
+
+    code = (
+        "import os; from runspool.cli import _detach_stdin; _detach_stdin(); "
+        "import subprocess, sys; "
+        "r = subprocess.run([sys.executable, '-c', "
+        "'import os; print(os.path.samestat(os.fstat(0), os.stat(os.devnull)))'], "
+        "capture_output=True, text=True); print(r.stdout.strip())"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], stdin=subprocess.PIPE, capture_output=True, text=True
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "True"  # the grandchild sees /dev/null, not the pipe
+
+
+def test_the_daemon_command_detaches_stdin(tmp_path, monkeypatch):
+    import runspool.cli as cli
+
+    cfg = _init(tmp_path)
+    calls = []
+    monkeypatch.setattr(cli, "_detach_stdin", lambda: calls.append("detached"))
+
+    class _Daemon:
+        def request_stop(self):
+            pass
+
+        def run(self):
+            calls.append("run")
+
+    monkeypatch.setattr(cli, "build_daemon", lambda ctx: _Daemon())
+    result = _invoke(cfg, "daemon")
+    assert result.exit_code == 0, result.output
+    assert calls == ["detached", "run"]

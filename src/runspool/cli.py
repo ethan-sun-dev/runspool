@@ -469,6 +469,7 @@ def daemon() -> None:
         _fail(exc)
     pid_file = daemon_pid_file(ctx)
     write_pid(pid_file, os.getpid())
+    _detach_stdin()
 
     def _handle(signum, frame):
         d.request_stop()
@@ -482,6 +483,24 @@ def daemon() -> None:
         pid_file.unlink(missing_ok=True)
         if ctx.kernel is not None:
             ctx.kernel.dispose()  # let plugins release threads, sockets, files
+
+
+def _detach_stdin() -> None:
+    """Point fd 0 at /dev/null: a resident daemon never reads the terminal.
+
+    Started as a background job (``nohup runspool daemon &``; macOS nohup leaves stdin
+    alone), the daemon would otherwise share the terminal as stdin with every tool its
+    steps run. One that reads it (ffmpeg does by default) gets SIGTTIN, which stops the
+    whole job: the daemon looks alive but schedules nothing. Children inherit fd 0.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.dup2(devnull, 0)
+    finally:
+        os.close(devnull)
 
 
 def _config_path_from(argv: list[str]) -> Path:

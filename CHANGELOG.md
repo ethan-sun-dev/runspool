@@ -12,6 +12,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--all`, `--active` (unfinished only) and `--status` (repeatable).
   `status --json` still lists every task unless a filter is given.
 
+### Fixed
+- The daemon points its stdin at /dev/null. Started as a background job
+  (`nohup runspool daemon &`; macOS nohup keeps the terminal as stdin), a tool a step
+  runs that reads stdin (ffmpeg does by default) got SIGTTIN, which stopped the whole
+  job: the daemon still looked alive but scheduled nothing.
+
 ## [0.2.1] - 2026-10-04
 
 ### Added
