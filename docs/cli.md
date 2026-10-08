@@ -88,14 +88,26 @@ running, or for the same plugin reasons as `run`. Companion commands:
 
 ### `runspool status [<id>]`
 
-With no id, list all tasks. With an id, show details: status, the step timeline
-(with each run's note), recent events, and last error.
+With no id, list tasks, newest first: the latest 20 by default. A footer says how
+many tasks are not shown and names unfinished ones hidden by the limit, so an old
+task waiting on you is never out of sight. With an id, show details: status, the
+step timeline (with each run's note), recent events, and last error.
+
+- `-n/--limit N` — the newest N tasks.
+- `--all` — every task.
+- `--active` — only unfinished tasks (anything not completed, partially completed
+  or terminated).
+- `--status NAME` — only tasks in that status; repeatable.
 
 ```bash
-runspool status
+runspool status                          # latest 20
+runspool status -n 50
+runspool status --active
+runspool status --status manual_required
 runspool status 1
-runspool status --json        # list of task objects
-runspool status 1 --json      # one task + events + step_runs
+runspool status --json                   # every task (JSON is not capped by default)
+runspool status --json --active          # filters apply to JSON too
+runspool status 1 --json                 # one task + events + step_runs
 ```
 
 ### `runspool inspect <id>`

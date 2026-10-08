@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Collection
 from datetime import UTC, datetime
+from typing import Any
 
 from runspool.clock import to_local_text, utcnow_text
-from runspool.models import TaskStatus
+from runspool.models import TERMINAL_STATUSES, TaskStatus
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
 
@@ -159,18 +161,61 @@ def truncate_by_width(text: str, max_width: int) -> str:
     return "".join(out) + "..."
 
 
-def format_task_list(repo: TaskRepository) -> str:
+DEFAULT_LIST_LIMIT = 20
+
+
+def select_tasks(
+    tasks: list[dict[str, Any]],
+    *,
+    limit: int | None = None,
+    statuses: Collection[str] = (),
+    active: bool = False,
+) -> list[dict[str, Any]]:
+    """Newest first, optionally filtered by status / unfinished, then capped at ``limit``."""
+    chosen = sorted(tasks, key=lambda t: t["id"], reverse=True)
+    if statuses:
+        chosen = [t for t in chosen if t["task_status"] in statuses]
+    if active:
+        chosen = [t for t in chosen if t["task_status"] not in TERMINAL_STATUSES]
+    return chosen if limit is None else chosen[:limit]
+
+
+def format_task_list(
+    repo: TaskRepository,
+    *,
+    limit: int | None = DEFAULT_LIST_LIMIT,
+    statuses: Collection[str] = (),
+    active: bool = False,
+) -> str:
     tasks = repo.list_all()
-    tasks.sort(key=lambda t: t["id"], reverse=True)
     if not tasks:
         return "(no tasks)"
+    shown = select_tasks(tasks, limit=limit, statuses=statuses, active=active)
     rows: list[str] = []
-    for t in tasks:
+    for t in shown:
         label = truncate_by_width(t.get("name") or t["input"], _LABEL_MAX)
         rows.append(
             f"#{t['id']:>4}  {t['task_status']:<16} {t['step']:<18} "
             f"{to_local_text(t['created_at'])}  {label}"
         )
+    if not rows:
+        rows.append("(no matching tasks)")
+    matching = len(select_tasks(tasks, statuses=statuses, active=active))
+    if len(shown) < matching:
+        shown_ids = {t["id"] for t in shown}
+        hidden_open = [
+            t for t in tasks
+            if t["id"] not in shown_ids and t["task_status"] not in TERMINAL_STATUSES
+            and (not statuses or t["task_status"] in statuses)
+        ]  # fmt: skip
+        note = f"-- showing {len(shown)} of {matching}; -n N for more, --all for all"
+        if hidden_open:
+            ids = ", ".join(f"#{t['id']}" for t in sorted(hidden_open, key=lambda t: -t["id"])[:8])
+            more = "" if len(hidden_open) <= 8 else ", ..."
+            note += (
+                f"\n-- {len(hidden_open)} unfinished not shown ({ids}{more}); --active lists them"
+            )
+        rows.append(note)
     return "\n".join(rows)
 
 

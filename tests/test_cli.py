@@ -311,3 +311,58 @@ def test_an_empty_workflow_option_is_an_error_not_the_default(tmp_path):
     result = _invoke(cfg, "add", str(src), "--workflow", "")
     assert result.exit_code == 1
     assert result.output.strip() == "undefined workflow:"
+
+
+def _many_tasks(tmp_path, n):
+    from runspool.app import load_context
+    from tests.support import force_fields
+
+    cfg = _init(tmp_path)
+    ctx = load_context(cfg)
+    for i in range(1, n + 1):
+        ctx.repo.create_task(input=f"in-{i}", workflow="local_file", first_step="ingest_file",
+                             max_retries=1)  # fmt: skip
+    for tid in range(1, n + 1):
+        if tid not in (2, 3):  # 2、3 留着没完成
+            force_fields(ctx.repo, tid, {"task_status": "completed"})
+    force_fields(ctx.repo, 3, {"task_status": "manual_required"})
+    return cfg
+
+
+def _ids(output):
+    import re
+
+    return [int(m.group(1)) for m in re.finditer(r"^#\s*(\d+)", output, flags=re.M)]
+
+
+def test_status_lists_the_newest_20_and_points_at_hidden_unfinished_ones(tmp_path):
+    cfg = _many_tasks(tmp_path, 30)
+    out = _invoke(cfg, "status").output
+    assert _ids(out) == list(range(30, 10, -1))
+    assert "showing 20 of 30" in out
+    assert "2 unfinished not shown (#3, #2); --active lists them" in out
+
+
+def test_status_limit_all_active_and_status_filters(tmp_path):
+    cfg = _many_tasks(tmp_path, 30)
+    assert _ids(_invoke(cfg, "status", "-n", "5").output) == [30, 29, 28, 27, 26]
+    assert len(_ids(_invoke(cfg, "status", "--all").output)) == 30
+    assert "showing" not in _invoke(cfg, "status", "--all").output
+    assert _ids(_invoke(cfg, "status", "--active").output) == [3, 2]
+    assert _ids(_invoke(cfg, "status", "--status", "manual_required").output) == [3]
+    both = _invoke(cfg, "status", "--status", "manual_required", "--status", "queued")
+    assert _ids(both.output) == [3, 2]
+    bad = _invoke(cfg, "status", "--status", "nope")
+    assert bad.exit_code == 1 and "unknown status: nope" in bad.output
+    mixed = _invoke(cfg, "status", "3", "--active")
+    assert mixed.exit_code == 1
+
+
+def test_status_json_still_lists_everything_unless_asked(tmp_path):
+    cfg = _many_tasks(tmp_path, 30)
+    everything = json.loads(_invoke(cfg, "status", "--json").output)
+    assert [t["id"] for t in everything] == list(range(1, 31))
+    newest = json.loads(_invoke(cfg, "status", "--json", "-n", "3").output)
+    assert [t["id"] for t in newest] == [28, 29, 30]
+    active = json.loads(_invoke(cfg, "status", "--json", "--active").output)
+    assert [t["id"] for t in active] == [2, 3]

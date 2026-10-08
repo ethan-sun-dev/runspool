@@ -82,7 +82,7 @@ caller should not approve on its own; surface `suggested_next_action` to a perso
 ## Other JSON commands
 
 ```bash
-runspool status --json        # array of task objects
+runspool status --json        # array of every task (add -n N / --active / --status to filter)
 runspool status <id> --json   # one task + events + step_runs
 runspool logs <id> --json     # array of events
 runspool overview --json      # {"queued": 2, "completed": 5, ...}

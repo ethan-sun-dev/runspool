@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- `runspool status` lists the newest 20 tasks by default instead of every task,
+  with a footer naming unfinished tasks the limit hides. New options: `-n/--limit`,
+  `--all`, `--active` (unfinished only) and `--status` (repeatable).
+  `status --json` still lists every task unless a filter is given.
+
 ## [0.2.1] - 2026-10-04
 
 ### Added

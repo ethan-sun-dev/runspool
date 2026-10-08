@@ -14,13 +14,16 @@ from runspool import commands
 from runspool.app import DEFAULT_CONFIG_FILENAME, init_app, load_context
 from runspool.daemon import write_pid
 from runspool.display import (
+    DEFAULT_LIST_LIMIT,
     format_logs,
     format_overview,
     format_task_detail,
     format_task_list,
+    select_tasks,
 )
 from runspool.doctor import run_doctor
 from runspool.kernel import ConfigError, KernelError
+from runspool.models import TaskStatus
 from runspool.persistence.state_machine import IllegalTransition
 from runspool.runtime import (
     build_daemon,
@@ -184,16 +187,49 @@ def run(
 
 @app.command()
 def status(
-    task_id: int = typer.Argument(None, help="Task id; omit to list all tasks."),
+    task_id: int = typer.Argument(None, help="Task id; omit to list tasks."),
+    limit: int = typer.Option(
+        None,
+        "--limit",
+        "-n",
+        min=1,
+        help=f"Newest N tasks (default {DEFAULT_LIST_LIMIT}; JSON: all).",
+    ),
+    all_tasks: bool = typer.Option(False, "--all", help="List every task."),
+    active: bool = typer.Option(
+        False, "--active", help="Only unfinished tasks (queued, running, paused, failed, ...)."
+    ),
+    status_filter: list[str] = typer.Option(
+        None, "--status", help="Only tasks in this status (repeatable)."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
-    """Show a task's detail, or list all tasks."""
+    """Show a task's detail, or list tasks (newest first; the latest 20 by default)."""
+    statuses = list(status_filter or [])
+    unknown = sorted(set(statuses) - {s.value for s in TaskStatus})
+    if unknown:
+        typer.echo(
+            f"unknown status: {', '.join(unknown)} "
+            f"(one of: {', '.join(s.value for s in TaskStatus)})"
+        )
+        raise typer.Exit(1)
+    if task_id is not None and (limit or all_tasks or active or statuses):
+        typer.echo("--limit / --all / --active / --status apply to the task list, not to one task")
+        raise typer.Exit(1)
     ctx = _ctx()
     if task_id is None:
         if json_output:
-            _emit_json(list_view(ctx.repo.list_all()))
+            # JSON keeps listing everything unless asked otherwise (scripts rely on it).
+            capped = None if all_tasks else limit
+            tasks = select_tasks(
+                ctx.repo.list_all(), limit=capped, statuses=statuses, active=active
+            )
+            _emit_json(list_view(sorted(tasks, key=lambda t: t["id"])))
         else:
-            typer.echo(format_task_list(ctx.repo))
+            capped = None if all_tasks else (limit or DEFAULT_LIST_LIMIT)
+            typer.echo(
+                format_task_list(ctx.repo, limit=capped, statuses=statuses, active=active)
+            )
         return
     task = ctx.repo.get_task(task_id)
     if task is None:
