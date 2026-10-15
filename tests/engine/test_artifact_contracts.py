@@ -291,6 +291,14 @@ class Unstatable(Step):
         return StepResult(artifacts=[Artifact("master", out, "ab" * 32)])
 
 
+class BadDeclaration(Step):
+    name = "bad_declaration"
+    requires = 123
+
+    def run(self, ctx):
+        return StepResult()
+
+
 class Undeclared(Step):
     name = "undeclared"
 
@@ -315,6 +323,7 @@ _CLASSES = {
     "wrong_type": "WrongType",
     "no_file": "NoFile",
     "undeclared": "Undeclared",
+    "bad_declaration": "BadDeclaration",
     "unreadable": "Unreadable",
     "unstatable": "Unstatable",
     "records_then_fails": "RecordsThenFails",
@@ -527,3 +536,31 @@ def test_a_failing_stat_fails_without_the_path_in_errors_or_logs(profile, capsys
     ctx, tid = _run(profile("drafts:\n  steps: [unstatable]\n"), first_step="unstatable")
     error = _no_paths(ctx, tid, capsys.readouterr().err)
     assert error.endswith("artifact 1 ('master'): cannot read the file (PermissionError)")
+
+
+# -- malformed declarations are findings, never "declares nothing" -------------------
+
+
+@pytest.mark.parametrize(
+    "requires, message",
+    [
+        (123, "must be a list or tuple of types, not int"),
+        ({"master"}, "must be a list or tuple of types, not set"),
+        ("master", "must be a list or tuple of types, not str"),
+        ([1], "artifact type must be a string, got int"),
+    ],
+)
+def test_a_malformed_declaration_raises_an_artifact_type_error(requires, message):
+    class Bad(_Plain):
+        pass
+
+    Bad.requires = requires
+    with pytest.raises(ArtifactTypeError, match=message):
+        contract_of(Bad())
+
+
+def test_a_malformed_declaration_fails_doctor(profile):
+    ctx = load_context(profile("drafts:\n  steps: [bad_declaration]\n"))
+    check = _doctor(ctx)
+    assert check is not None and not check.ok
+    assert "'bad_declaration'" in check.detail and "not int" in check.detail

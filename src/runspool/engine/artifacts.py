@@ -89,10 +89,15 @@ def parse_type(text: str) -> ArtifactType:
 def parse_types(
     values: Iterable[str] | None, *, owner: str, field_name: str
 ) -> tuple[ArtifactType, ...]:
+    """Parse a declaration: ``None`` or a list / tuple of type strings. Anything else
+    raises :class:`ArtifactTypeError` (it is never taken as "declares nothing")."""
     if values is None:
         return ()
-    if isinstance(values, str):
-        raise ArtifactTypeError(f"{owner}: {field_name} must be a list of types, not a string")
+    if not isinstance(values, (list, tuple)):
+        raise ArtifactTypeError(
+            f"{owner}: {field_name} must be a list or tuple of types, "
+            f"not {type(values).__name__}"
+        )
     types = []
     for value in values:
         try:
@@ -166,10 +171,9 @@ def check_chain(
     types the task's input provides before the first step.
     """
     report = ChainReport()
+    inputs = list(inputs) if isinstance(inputs, (list, tuple)) else inputs
     try:
-        available = list(
-            parse_types(list(inputs), owner=f"workflow {workflow!r}", field_name="inputs")
-        )
+        available = list(parse_types(inputs, owner=f"workflow {workflow!r}", field_name="inputs"))
     except ArtifactTypeError as exc:
         report.errors.append(str(exc))
         available = []

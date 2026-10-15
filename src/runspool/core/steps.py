@@ -108,12 +108,20 @@ class StepsService:
         def contract_for(name: str) -> Contract | None:
             if not self.registry.has(name):
                 return None
+            step = self.registry.get(name)
+            if isinstance(step, LazyStep):
+                try:
+                    step = step.resolve()
+                except Exception:  # noqa: BLE001 - a step that fails to load is reported elsewhere
+                    return None
             try:
-                return contract_of(self.registry.get(name))
+                return contract_of(step)
             except ArtifactTypeError:
                 raise
-            except Exception:  # noqa: BLE001 - a step that fails to load is reported elsewhere
-                return None
+            except Exception as exc:  # noqa: BLE001 - e.g. a declaration property that raises
+                raise ArtifactTypeError(
+                    f"step {name!r}: cannot read its declarations ({type(exc).__name__})"
+                ) from None
 
         return check_workflows(workflows, contract_for)
 
