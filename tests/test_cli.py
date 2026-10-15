@@ -454,3 +454,31 @@ def test_pid_state_reads_a_real_process():
     finally:
         os.kill(child.pid, signal.SIGKILL)
         child.wait()
+
+
+def test_events_follow_from_a_cursor(tmp_path):
+    cfg = _init(tmp_path)
+    src = tmp_path / "notes.txt"
+    src.write_text("Meeting notes: agenda and action items discussed.", encoding="utf-8")
+    assert _invoke(cfg, "add", str(src), "--workflow", "local_file").exit_code == 0
+
+    first = json.loads(_invoke(cfg, "events", "--json").output)
+    assert first["events"], "creating a task records at least one event"
+    ids = [e["id"] for e in first["events"]]
+    assert ids == sorted(ids)
+    assert first["cursor"] == ids[-1]
+    assert {e["task_id"] for e in first["events"]} == {1}
+
+    # Nothing new since the cursor: empty list, cursor unchanged.
+    again = json.loads(_invoke(cfg, "events", "--since", str(first["cursor"]), "--json").output)
+    assert again == {"events": [], "cursor": first["cursor"]}
+
+    # Running the task adds events after the cursor, and only those come back.
+    assert _invoke(cfg, "run").exit_code == 0
+    later = json.loads(_invoke(cfg, "events", "--since", str(first["cursor"]), "--json").output)
+    assert later["events"] and all(e["id"] > first["cursor"] for e in later["events"])
+
+    # Filter by task; human output prints one line per event and the cursor on stderr.
+    assert json.loads(_invoke(cfg, "events", "--task", "2", "--json").output)["events"] == []
+    human = _invoke(cfg, "events")
+    assert human.exit_code == 0 and "#1 task 1" in human.output
