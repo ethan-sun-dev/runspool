@@ -659,3 +659,138 @@ def test_allow_unverified_runs_a_mixed_chain_and_reports_it_once(profile, caplog
     notes = [r.getMessage() for r in caplog.records if r.name == "runspool.contracts"]
     assert len(notes) == 1
     assert "workflow 'drafts'" in notes[0] and "unverified" in notes[0]
+
+
+# -- plugins reloaded while the runtime lives (fiber.restart) -----------------------
+
+RELOADABLE = """
+from runspool.engine.step import Step, StepResult
+
+STATE = {"provides": ["master"]}
+
+
+def producer(ctx, config):
+    class Produce(Step):
+        name = "produce"
+        provides = tuple(STATE["provides"])
+
+        def run(self, ctx):
+            return StepResult()
+
+    ctx.steps.register(Produce())
+
+
+producer.inject = ["steps"]
+
+
+class Consume(Step):
+    name = "consume"
+    requires = ("master",)
+
+    def run(self, ctx):
+        return StepResult()
+
+
+def consumer(ctx, config):
+    ctx.steps.register(Consume())
+
+
+consumer.inject = ["steps"]
+"""
+
+
+@pytest.fixture
+def reloadable(tmp_path, monkeypatch, request):
+    module = f"reloadable_{request.node.name}"
+    (tmp_path / f"{module}.py").write_text(RELOADABLE, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    path = tmp_path / "runspool.yaml"
+    path.write_text(
+        f"workspace_root: {tmp_path / '工作 区'}\n"
+        "workflows:\n  drafts:\n    steps: [produce, consume]\n"
+        "patch:\n  - insert:\n"
+        f"      - {{id: producer, plugin: '{module}:producer'}}\n"
+        f"      - {{id: consumer, plugin: '{module}:consumer'}}\n",
+        encoding="utf-8",
+    )
+    ctx = load_context(path)
+    state = __import__(module).STATE
+    fiber = next(f for f in ctx.kernel.fibers if f.name == "producer")
+
+    def reload_producer(provides):
+        state["provides"] = provides
+        fiber.restart()
+
+    return ctx, reload_producer
+
+
+def _drive(ctx, daemon, tid):
+    """Tick the daemon until the task stops moving."""
+    for _ in range(10):
+        daemon.run_once()
+        daemon.coordinator.pool.drain()
+        status = ctx.repo.get_task(tid)["task_status"]
+        if status in (TaskStatus.COMPLETED, TaskStatus.MANUAL_REQUIRED):
+            return status
+    return ctx.repo.get_task(tid)["task_status"]
+
+
+def _new_task(ctx):
+    return ctx.repo.create_task(input="in", workflow="drafts", first_step="produce", max_retries=0)
+
+
+def test_a_reload_that_breaks_the_chain_stops_new_tasks_of_a_running_daemon(reloadable):
+    ctx, reload_producer = reloadable
+    daemon = ctx.service("runtime").build_daemon()
+    try:
+        assert _drive(ctx, daemon, _new_task(ctx)) == TaskStatus.COMPLETED
+        reload_producer([])  # the producer no longer declares the master
+        assert not _doctor(ctx).ok
+        tid = _new_task(ctx)
+        assert _drive(ctx, daemon, tid) == TaskStatus.MANUAL_REQUIRED
+        assert "'consume' requires 'master'" in ctx.repo.get_task(tid)["last_error"]
+    finally:
+        daemon.coordinator.pool.shutdown(wait=True)
+
+
+def test_a_reload_that_fixes_the_chain_lets_a_retry_run(reloadable):
+    ctx, reload_producer = reloadable
+    reload_producer([])
+    daemon = ctx.service("runtime").build_daemon()
+    try:
+        tid = _new_task(ctx)
+        assert _drive(ctx, daemon, tid) == TaskStatus.MANUAL_REQUIRED
+        reload_producer(["master"])
+        assert _doctor(ctx).ok
+        ctx.state_machine("drafts").retry(tid)
+        assert _drive(ctx, daemon, tid) == TaskStatus.COMPLETED
+    finally:
+        daemon.coordinator.pool.shutdown(wait=True)
+
+
+def test_the_step_about_to_run_is_checked_as_that_object():
+    """A reload between taking a step from the registry and running it must not make
+    the check judge a different version than the one that runs."""
+    from runspool.config import WorkflowConfig
+    from runspool.core.steps import StepsService
+
+    class Old(Step):
+        name = "produce"
+        provides = ("master",)
+
+        def run(self, ctx):
+            return StepResult()
+
+    class New(Old):
+        provides = ()
+
+    class Consume(_Plain):
+        name = "consume"
+        requires = ("master",)
+
+    service = StepsService()
+    service.registry.register(New())  # what is registered now
+    service.registry.register(Consume())
+    workflow = WorkflowConfig(steps=["produce", "consume"])
+    assert not service.check_contract("wf", workflow).ok
+    assert service.check_contract("wf", workflow, running=Old()).ok

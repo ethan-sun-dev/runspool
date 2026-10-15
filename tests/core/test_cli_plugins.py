@@ -100,7 +100,7 @@ def test_config_path_is_found_before_parsing(argv, expected):
     assert str(_config_path_from(argv)) == expected
 
 
-LEGACY_ARTIFACTS = '''
+LEGACY_ARTIFACTS = """
 import typer
 
 
@@ -112,7 +112,7 @@ def contribute(ctx, config):
 
 
 contribute.inject = ["cli"]
-'''
+"""
 
 
 def test_a_plugin_command_named_artifacts_keeps_working(tmp_path, monkeypatch, capsys):

@@ -109,7 +109,14 @@ def test_a_v3_database_from_0_2_2_is_upgraded_to_v4_keeping_everything(tmp_path)
         assert columns(path, t) == columns_before[t]
         assert _rows(path, f"select * from {t} order by id") == before[t]
     assert columns(path, "artifacts") == {
-        "id", "task_id", "step", "step_run_id", "type", "path", "sha256", "size_bytes",
+        "id",
+        "task_id",
+        "step",
+        "step_run_id",
+        "type",
+        "path",
+        "sha256",
+        "size_bytes",
         "created_at",
     }
     assert _rows(path, "select count(*) from artifacts") == [(0,)]

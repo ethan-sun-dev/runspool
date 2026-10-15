@@ -101,8 +101,7 @@ def parse_types(
         return ()
     if not isinstance(values, (list, tuple)):
         raise ArtifactTypeError(
-            f"{owner}: {field_name} must be a list or tuple of types, "
-            f"not {type(values).__name__}"
+            f"{owner}: {field_name} must be a list or tuple of types, not {type(values).__name__}"
         )
     types = []
     for value in values:

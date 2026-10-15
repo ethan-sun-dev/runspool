@@ -52,7 +52,7 @@ class Gate:
 
     def __call__(self, request: GateRequest) -> Decision:
         if self._contracts is not None:
-            problem = self._contracts.problem(request.task["workflow"])
+            problem = self._contracts.problem(request.task["workflow"], request.step)
             if problem:
                 return Deny(problem)
         try:
@@ -97,36 +97,41 @@ class WorkflowContracts:
     """Artifact contracts of the workflow a task belongs to, checked before each of
     its steps runs (``run`` and the daemon alike, so tasks added after the daemon
     started are checked too). Doctor checks every workflow; this only the ones
-    that have work. Results are kept per workflow: the steps and workflows of a
-    process do not change after boot."""
+    that have work.
+
+    Nothing is cached: plugins can be reloaded while the runtime lives
+    (``fiber.restart()``), which changes the registered steps, so every check reads
+    the registry as it is then. The step about to run is checked as the object
+    that will run, not as whatever is registered under its name by then.
+    """
 
     def __init__(self, steps: Any, config: AppConfig) -> None:
         self._steps = steps
         self._config = config
-        self._problems: dict[str, str | None] = {}
+        # Unverified gaps already warned about, per workflow: warn again only when
+        # they change (after a reload), not on every step.
+        self._warned: dict[str, tuple[str, ...]] = {}
         self._lock = threading.Lock()
 
-    def problem(self, workflow: str) -> str | None:
-        """Why the workflow's tasks may not run, or ``None``."""
-        with self._lock:
-            if workflow not in self._problems:
-                self._problems[workflow] = self._check(workflow)
-            return self._problems[workflow]
-
-    def _check(self, workflow: str) -> str | None:
+    def problem(self, workflow: str, step: Any = None) -> str | None:
+        """Why ``step`` of a task of ``workflow`` may not run now, or ``None``."""
         definition = self._config.workflows.get(workflow)
         if definition is None:
             return None  # an unknown workflow is the scheduler's business
-        report = self._steps.check_contract(workflow, definition)
+        report = self._steps.check_contract(workflow, definition, running=step)
         if report.errors:
             return f"artifact contracts of workflow {workflow!r} are not met: " + "; ".join(
                 report.errors
             )
-        if report.unverified:
+        unverified = tuple(report.unverified)
+        with self._lock:
+            changed = unverified and self._warned.get(workflow) != unverified
+            self._warned[workflow] = unverified
+        if changed:
             _contracts_log.warning(
                 "workflow %r runs with unverified artifact contracts: %s",
                 workflow,
-                "; ".join(report.unverified),
+                "; ".join(unverified),
             )
         return None
 

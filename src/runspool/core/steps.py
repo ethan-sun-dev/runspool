@@ -100,13 +100,15 @@ class StepsService:
     def has(self, name: str) -> bool:
         return self.registry.has(name)
 
-    def contract_for(self, name: str) -> Contract | None:
-        """A registered step's artifact contract; ``None`` if it is not registered or
-        fails to load (other checks report those). Raises ArtifactTypeError when its
-        declarations are malformed or cannot be read."""
-        if not self.registry.has(name):
-            return None
-        step = self.registry.get(name)
+    def contract_for(self, name: str, step: Step | None = None) -> Contract | None:
+        """A step's artifact contract: of ``step`` if given (a step about to run),
+        else of the one registered under ``name``. ``None`` if it is not registered
+        or fails to load (other checks report those). Raises ArtifactTypeError when
+        its declarations are malformed or cannot be read."""
+        if step is None:
+            if not self.registry.has(name):
+                return None
+            step = self.registry.get(name)
         if isinstance(step, LazyStep):
             try:
                 step = step.resolve()
@@ -125,9 +127,20 @@ class StepsService:
         """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``)."""
         return check_workflows(workflows, self.contract_for)
 
-    def check_contract(self, name: str, workflow: Any) -> ChainReport:
-        """Check the artifact contracts of one workflow (a ``WorkflowConfig``)."""
-        return check_workflow(name, workflow, self.contract_for)
+    def check_contract(
+        self, name: str, workflow: Any, *, running: Step | None = None
+    ) -> ChainReport:
+        """Check the artifact contracts of one workflow (a ``WorkflowConfig``) against
+        the steps registered now. ``running``: the step object about to run, used for
+        its own name instead of the registry, so the check matches what runs even if
+        a plugin reloads in between."""
+
+        def contract_for(step_name: str) -> Contract | None:
+            if running is not None and step_name == running.name:
+                return self.contract_for(step_name, running)
+            return self.contract_for(step_name)
+
+        return check_workflow(name, workflow, contract_for)
 
     def resolve_all(self) -> list[tuple[str, Exception]]:
         """Import every lazy step; return ``(name, error)`` for those that fail."""
@@ -163,8 +176,10 @@ class _BoundSteps:
     def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
         return self._service.check_contracts(workflows)
 
-    def check_contract(self, name: str, workflow: Any) -> ChainReport:
-        return self._service.check_contract(name, workflow)
+    def check_contract(
+        self, name: str, workflow: Any, *, running: Step | None = None
+    ) -> ChainReport:
+        return self._service.check_contract(name, workflow, running=running)
 
     def side_effect_of(self, name: str) -> bool:
         return self._service.side_effect_of(name)
