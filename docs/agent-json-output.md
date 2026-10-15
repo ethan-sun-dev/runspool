@@ -85,11 +85,31 @@ caller should not approve on its own; surface `suggested_next_action` to a perso
 runspool status --json        # array of every task (add -n N / --active / --status to filter)
 runspool status <id> --json   # one task + events + step_runs
 runspool logs <id> --json     # array of events
+runspool events --since N --json  # {"events": [...], "cursor": M}: events after id N, oldest first
 runspool overview --json      # {"queued": 2, "completed": 5, ...}
 runspool workflows --json     # {"local_file": ["ingest_file", ...]}
 runspool doctor --json        # array of {name, ok, detail}
 runspool run --json           # {"rounds": N, "tasks": [...]}
 ```
+
+### Following progress from another process
+
+Event ids only ever increase. A client that is not the process running the tasks
+(another terminal, a UI, an agent) can follow everything that happens by keeping
+the last cursor it saw:
+
+```bash
+cursor=0
+while true; do
+  feed=$(runspool events --since "$cursor" --json)
+  echo "$feed" | jq -c '.events[]'
+  cursor=$(echo "$feed" | jq '.cursor')
+  sleep 2
+done
+```
+
+Each event carries `id`, `task_id`, `event_type`, `step`, `message`, `payload`
+and `created_at`. Add `--task <id>` to follow one task.
 
 ## Example: a tiny agent loop in bash
 

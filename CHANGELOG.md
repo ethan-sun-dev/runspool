@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `runspool events --since <cursor> [--task <id>] --json` and `EventLog.since()`:
+  follow events across all tasks from a cursor. Event ids only increase, so a
+  client in another process can resume from the last id it saw. `logs --json`
+  output is unchanged.
+
 ## [0.2.2] - 2026-10-15
 
 ### Changed

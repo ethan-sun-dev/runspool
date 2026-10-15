@@ -48,6 +48,24 @@ class EventLog:
         with self.db.connect() as conn:
             insert_event(conn, task_id, Event(event_type, step, message, payload))
 
+    def since(
+        self, cursor: int = 0, *, task_id: int | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Events with an id greater than ``cursor``, oldest first.
+
+        Event ids only ever increase, so a client in another process can follow
+        progress by remembering the last id it saw and asking again.
+        """
+        sql = "select * from task_events where id > ?"
+        params: list[Any] = [cursor]
+        if task_id is not None:
+            sql += " and task_id = ?"
+            params.append(task_id)
+        sql += " order by id asc limit ?"
+        params.append(limit)
+        with self.db.connect() as conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
     def list_for_task(self, task_id: int, limit: int | None = None) -> list[dict[str, Any]]:
         sql = "select * from task_events where task_id = ? order by id desc"
         params: list[Any] = [task_id]

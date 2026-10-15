@@ -7,6 +7,7 @@ and AI agents can all rely on.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from runspool.app import AppContext
@@ -81,6 +82,25 @@ def events_view(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for e in events
     ]
+
+
+def event_feed_view(events: list[dict[str, Any]], cursor: int) -> dict[str, Any]:
+    """Events for a follower: ids and payloads included, plus the cursor to resume from."""
+    items = []
+    for e in events:
+        payload = e.get("payload_json")
+        items.append(
+            {
+                "id": e["id"],
+                "task_id": e["task_id"],
+                "event_type": e["event_type"],
+                "step": e["step"],
+                "message": e["message"],
+                "payload": json.loads(payload) if payload else None,
+                "created_at": e["created_at"],
+            }
+        )
+    return {"events": items, "cursor": items[-1]["id"] if items else cursor}
 
 
 def runs_view(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -32,7 +32,14 @@ from runspool.runtime import (
     request_daemon_stop,
     run_until_idle,
 )
-from runspool.views import detail_view, events_view, inspect_view, list_view, overview_view
+from runspool.views import (
+    detail_view,
+    event_feed_view,
+    events_view,
+    inspect_view,
+    list_view,
+    overview_view,
+)
 
 app = typer.Typer(
     help="Runspool: a local-first CLI workflow engine for reliable personal automation.",
@@ -281,6 +288,29 @@ def logs(
         _emit_json(events_view(ctx.log.list_for_task(task_id, limit=limit)))
     else:
         typer.echo(format_logs(ctx.log, task_id, limit=limit))
+
+
+@app.command()
+def events(
+    since: int = typer.Option(0, "--since", help="Only events with an id greater than this."),
+    task_id: int | None = typer.Option(None, "--task", help="Only this task's events."),
+    limit: int = typer.Option(500, help="At most N events."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Follow events across all tasks, oldest first, from a cursor.
+
+    Pass the returned cursor back as --since to get only what happened after it.
+    """
+    ctx = _ctx()
+    feed = event_feed_view(ctx.log.since(since, task_id=task_id, limit=limit), since)
+    if json_output:
+        _emit_json(feed)
+        return
+    for e in feed["events"]:
+        step = f" {e['step']}" if e["step"] else ""
+        message = f"  {e['message']}" if e["message"] else ""
+        typer.echo(f"#{e['id']} task {e['task_id']} {e['event_type']}{step}{message}")
+    typer.echo(f"cursor: {feed['cursor']}", err=True)
 
 
 @app.command()
