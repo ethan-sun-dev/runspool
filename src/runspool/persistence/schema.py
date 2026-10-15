@@ -115,6 +115,15 @@ MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 
+def stored_version(conn: sqlite3.Connection) -> int:
+    """The schema version recorded in the database (0: new or from before versioning)."""
+    try:
+        row = conn.execute("select value from schema_meta where key = 'version'").fetchone()
+    except sqlite3.OperationalError:  # no schema_meta table yet
+        return 0
+    return int(row[0]) if row else 0
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Bring the database up to ``SCHEMA_VERSION``; return the version it ends at."""
     conn.execute(

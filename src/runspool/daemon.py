@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from runspool.engine.coordinator import Coordinator
+from runspool.executor_lock import ExecutorLock
 from runspool.persistence.state_machine import StateMachine
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,13 @@ class Daemon:
         config: Any,
         *,
         on_tick: Callable[[DaemonTick], None] | None = None,
+        lock: ExecutorLock | None = None,
     ) -> None:
         self.coordinator = coordinator
         self.config = config
+        # Held for the daemon's whole run (taken in run() unless the caller already
+        # holds it): recovery and scheduling happen only in the lock holder.
+        self.lock = lock
         # Called once per round after scheduling (maintenance hooks). It runs on the
         # daemon's own thread, so it must return quickly.
         self.on_tick = on_tick
@@ -96,6 +101,15 @@ class Daemon:
             if poll_interval_seconds is not None
             else self.config.scheduler.poll_interval_seconds
         )
+        if self.lock is not None and not self.lock.acquire():
+            raise self.lock.busy_error("cannot start the daemon")
+        try:
+            self._run(interval)
+        finally:
+            if self.lock is not None:
+                self.lock.release()
+
+    def _run(self, interval: float) -> None:
         self.recover()
         try:
             while not self._stop.is_set():

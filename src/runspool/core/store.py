@@ -8,6 +8,7 @@ machine, never by the store. Any replacement implementation must pass
 
 from __future__ import annotations
 
+from runspool.executor_lock import executor_lock_path
 from runspool.kernel import Plugin
 from runspool.persistence.connection import Database
 from runspool.persistence.event_log import EventLog
@@ -35,7 +36,7 @@ class Store:
 
 def _apply(ctx, config) -> None:
     db = Database(ctx.config.database_path)
-    db.init()
+    db.init(upgrade_lock=executor_lock_path(db.path))
     store = Store(db)
     if ctx.config.first_task_id is not None:
         store.repo.ensure_next_id(ctx.config.first_task_id)

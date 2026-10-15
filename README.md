@@ -313,8 +313,9 @@ silent worker's task is reclaimed by heartbeat timeout. See
 **Claiming is atomic.** A task is claimed with a single conditional
 `UPDATE ... WHERE task_status = 'queued'`, and the caller checks `rowcount` to
 learn whether it won — never check-then-act. That makes claiming correct even
-when two processes race for the same task (e.g. a `run` invocation alongside a
-live `daemon`), so exactly one worker ever executes a given step. The state
+when several workers race for the same task, so exactly one worker ever executes
+a given step. On top of that, only one process executes steps on a database at a
+time (the executor lock). The state
 machine is the only place transitions are decided; steps return data and never
 touch the database. The reasoning behind these boundaries is in
 [docs/design-decisions.md](docs/design-decisions.md).

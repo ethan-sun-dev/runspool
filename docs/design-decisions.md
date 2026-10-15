@@ -173,16 +173,22 @@ hard-coding the state graph. Consistency matters here too: a missing task return
 misread. See [agent-json-output.md](agent-json-output.md) and the committed
 [`sample-output/`](../sample-output/).
 
-## 10. `run` and `daemon` are mutually exclusive by default
+## 10. One executor per database
 
-**Decision.** `run` (advance everything once, then exit) refuses to start while a
-`daemon` is live, unless `--force`.
+**Decision.** Only one process executes steps on a database at a time. `run`
+(advance everything once, then exit) and `daemon` both take the executor lock, an
+OS file lock next to the database, and refuse to start while another process
+holds it. Crash recovery and schema upgrades happen only while holding it.
 
 **Why.** `run` begins by recovering interrupted `running` tasks back to `queued`
-— correct when nothing else is executing, catastrophic if a daemon is mid-step,
-because it would yank the daemon's in-flight task and let the step run twice. The
-guard makes the safe path the default and reserves the foot-gun for a deliberate
-`--force`.
+— correct when nothing else is executing, catastrophic if another process is
+mid-step, because it would yank that process's in-flight task and let the step
+run twice. Before the lock, a pid-file check guarded only `run` against the daemon,
+with `--force` to override; applications that run the engine in-process can have
+several short-lived processes at once, so the guarantee has to come from a lock
+every executor takes. The OS drops the lock when its holder exits, however it
+exits, so there is never a stale lock to clean up. (`--force` now only skips the
+pid-file check, which still catches a daemon from a release before the lock.)
 
 ## 11. Everything is a plugin; the kernel knows nothing about tasks
 

@@ -21,6 +21,7 @@ workspace/
 *.db
 *.db-journal
 *.db-wal
+*.db.executor-lock
 .env
 
 # Ignore a config.yaml created at the repo root by `runspool init`, but keep the
