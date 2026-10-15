@@ -39,6 +39,7 @@ from packaging.version import InvalidVersion, Version
 from runspool.kernel.compose import Composition, Entry, Layer, compose, load_patch_file
 from runspool.kernel.errors import ComposeError, KernelError, StartupError
 from runspool.kernel.fiber import Fiber, FiberState, Kernel
+from runspool.kernel.plugin import PluginMeta, PluginSpec, config_schema, normalize
 
 PLUGIN_GROUP = "runspool.plugins"
 BUNDLE_GROUP = "runspool.bundles"
@@ -126,6 +127,44 @@ class StartupReport:
         return out
 
 
+@dataclass
+class PluginInfo:
+    """What a catalog needs to know about one plugin: where it stands in this
+    profile and what it declares (see :mod:`runspool.kernel.plugin`).
+
+    ``id`` is the profile entry, or ``None`` for an installed plugin the profile does
+    not mount. ``state`` is a :class:`FiberState` value, ``"skipped"`` (the entry
+    could not be mounted), ``"available"`` (installed, not in the profile) or
+    ``"unavailable"`` (installed, but cannot be loaded here). ``meta`` and
+    ``config_schema`` are unknown (``None``) when the plugin could not be loaded.
+    """
+
+    id: str | None
+    plugin: str
+    state: str
+    error: str | None = None
+    meta: PluginMeta | None = None
+    config_schema: dict[str, Any] | None = None
+    distribution: str | None = None
+    version: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        meta = self.meta.to_dict() if self.meta is not None else dict.fromkeys(_META_KEYS)
+        return {
+            "id": self.id,
+            "plugin": self.plugin,
+            "state": self.state,
+            "error": self.error,
+            **meta,
+            "config_schema": self.config_schema,
+            "distribution": self.distribution,
+            "version": self.version,
+        }
+
+
+_META_KEYS = ("category", "description", "external", "hosts")
+
+
 class Loader:
     """Mounts composed entries into a kernel and reports on the result."""
 
@@ -180,6 +219,32 @@ class Loader:
                 )
             )
         return StartupReport(statuses)
+
+    def describe(self, *, installed: bool = False) -> list[PluginInfo]:
+        """Every mounted entry with its metadata, in mount order. With ``installed``,
+        also every installed plugin (entry point) the profile does not mount; those
+        are imported to read their metadata, but never applied."""
+        report = {status.id: status for status in self.report().entries}
+        infos = []
+        mounted_refs = set()
+        for entry, fiber, _skipped in self._mounted.values():
+            mounted_refs.add(entry.plugin)
+            status = report[entry.id]
+            info = PluginInfo(entry.id, entry.plugin, status.state, error=status.error)
+            if fiber is not None:
+                _fill(info, fiber.spec)
+            _fill_dist(info, self._plugins.get(entry.plugin))
+            infos.append(info)
+        if installed:
+            for name in sorted(set(self._plugins) - mounted_refs):
+                info = PluginInfo(None, name, "available")
+                _fill_dist(info, self._plugins[name])
+                try:
+                    _fill(info, normalize(self._resolve(name)))
+                except (_Skip, KernelError) as exc:
+                    info.state, info.error = "unavailable", str(exc)
+                infos.append(info)
+        return infos
 
     def audit(self, required: Collection[str] = ()) -> StartupReport:
         """Raise :class:`StartupError` if any required entry is not active."""
@@ -297,6 +362,20 @@ def compose_profile(
 
 class _Skip(Exception):
     pass
+
+
+def _fill(info: PluginInfo, spec: PluginSpec) -> None:
+    info.meta = spec.meta
+    try:
+        info.config_schema = config_schema(spec.config_model)
+    except Exception as exc:  # noqa: BLE001 - a model that cannot describe itself
+        info.error = info.error or f"config schema unavailable: {_describe(exc)}"
+
+
+def _fill_dist(info: PluginInfo, ep: metadata.EntryPoint | None) -> None:
+    dist = getattr(ep, "dist", None)
+    if dist is not None:
+        info.distribution, info.version = dist.metadata["Name"], dist.version
 
 
 def _exempt(dist_name: str, dist_version: str, allow: Collection[str]) -> bool:

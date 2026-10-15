@@ -465,6 +465,30 @@ def workflows(json_output: bool = typer.Option(False, "--json", help="Emit JSON.
 
 
 @app.command()
+def plugins(
+    installed: bool = typer.Option(
+        False, "--installed", help="Also list installed plugins this profile does not mount."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List the profile's plugins with their state and declared metadata."""
+    ctx = _ctx()
+    infos = ctx.service("startup").loader.describe(installed=installed)
+    if json_output:
+        _emit_json({"plugins": [info.to_dict() for info in infos]})
+        return
+    for info in infos:
+        name = info.id or f"({info.plugin})"
+        category = f" [{info.meta.category}]" if info.meta and info.meta.category else ""
+        line = f"{name:<24} {info.state:<11}{category}"
+        if info.meta and info.meta.description:
+            line += f"  {info.meta.description}"
+        typer.echo(line.rstrip())
+        if info.error:
+            typer.echo(f"    {info.error}")
+
+
+@app.command()
 def doctor(json_output: bool = typer.Option(False, "--json", help="Emit JSON.")) -> None:
     """Check the local environment."""
     checks = run_doctor(_ctx())

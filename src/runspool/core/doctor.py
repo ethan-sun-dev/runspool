@@ -7,6 +7,7 @@ where ``check()`` returns a :class:`Check` or a list of them.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -105,11 +106,36 @@ class DoctorService:
         checks.append(
             Check("plugins", not problems, "; ".join(problems) if problems else "all active")
         )
+        checks.append(self._external_check())
         warnings = list(getattr(self._startup, "warnings", []))
         checks.append(
             Check("profile", not warnings, "; ".join(warnings) if warnings else "no warnings")
         )
         return checks
+
+
+    def _external_check(self) -> Check:
+        """Programs active plugins declare they need (``external``, kind ``binary``)
+        must be on PATH; other kinds are not checked."""
+        loader = getattr(self._startup, "loader", None)
+        infos = loader.describe() if loader is not None else []
+        needed = 0
+        problems = []
+        for info in infos:
+            if info.state != "active" or info.meta is None:
+                continue
+            for ext in info.meta.external:
+                if ext.kind != "binary":
+                    continue
+                needed += 1
+                if shutil.which(ext.name) is None:
+                    hint = f" ({ext.hint})" if ext.hint else ""
+                    problems.append(f"{ext.name} not on PATH, needed by {info.id}{hint}")
+        if problems:
+            return Check("external", False, "; ".join(problems))
+        if not needed:
+            return Check("external", True, "no programs declared")
+        return Check("external", True, f"{needed} program(s) found")
 
 
 class _BoundDoctor:

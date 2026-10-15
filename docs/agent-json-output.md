@@ -89,6 +89,7 @@ runspool events --since N --json  # {"events": [...], "cursor": M}: events after
 runspool overview --json      # {"queued": 2, "completed": 5, ...}
 runspool workflows --json     # {"local_file": ["ingest_file", ...]}
 runspool doctor --json        # array of {name, ok, detail}
+runspool plugins --json       # {"plugins": [...]}: entries, state, metadata, config schema
 runspool run --json           # {"rounds": N, "tasks": [...]}
 ```
 
