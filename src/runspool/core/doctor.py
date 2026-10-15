@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from runspool.core.steps import StepsChanging
 from runspool.kernel import Plugin
 
 CheckFn = Callable[[], "Check | list[Check]"]
@@ -120,7 +121,10 @@ class DoctorService:
     def _contracts_check(self) -> Check | None:
         """Artifact contracts of every workflow. Only shown once something declares
         one: without declarations doctor reports exactly what it did before."""
-        report = self._steps.check_contracts(self._config.workflows)
+        try:
+            report = self._steps.check_contracts(self._config.workflows)
+        except StepsChanging:
+            return Check("artifacts", False, "steps are being reloaded; run doctor again")
         if report.errors:  # whatever ``declared`` says: an error is never hidden
             return Check("artifacts", False, "; ".join(report.errors))
         if not report.declared:

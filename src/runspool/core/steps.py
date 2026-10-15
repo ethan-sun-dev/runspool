@@ -28,6 +28,13 @@ from runspool.engine.step import Step, StepContext, StepResult
 from runspool.kernel import Plugin
 from runspool.registry_builder import StepLoadError
 
+# How many times a contract check starts over when the steps change under it.
+_CONSISTENT_ATTEMPTS = 5
+
+
+class StepsChanging(RuntimeError):
+    """The registered steps kept changing (plugins reloading) during a check."""
+
 
 class LazyStep(Step):
     """A step known by name whose implementation is imported on first use."""
@@ -100,15 +107,15 @@ class StepsService:
     def has(self, name: str) -> bool:
         return self.registry.has(name)
 
-    def contract_for(self, name: str, step: Step | None = None) -> Contract | None:
-        """A step's artifact contract: of ``step`` if given (a step about to run),
-        else of the one registered under ``name``. ``None`` if it is not registered
-        or fails to load (other checks report those). Raises ArtifactTypeError when
-        its declarations are malformed or cannot be read."""
-        if step is None:
-            if not self.registry.has(name):
-                return None
-            step = self.registry.get(name)
+    def contract_for(self, name: str) -> Contract | None:
+        """The artifact contract of the step registered under ``name``; ``None`` if
+        it is not registered or fails to load (other checks report those). Raises
+        ArtifactTypeError when its declarations are malformed or cannot be read."""
+        if not self.registry.has(name):
+            return None
+        return self._contract_of(name, self.registry.get(name))
+
+    def _contract_of(self, name: str, step: Step) -> Contract | None:
         if isinstance(step, LazyStep):
             try:
                 step = step.resolve()
@@ -124,23 +131,43 @@ class StepsService:
             ) from None
 
     def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
-        """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``)."""
-        return check_workflows(workflows, self.contract_for)
+        """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``),
+        all against one consistent set of steps (see :meth:`_consistently`)."""
+        return self._consistently(lambda lookup: check_workflows(workflows, lookup))
 
     def check_contract(
         self, name: str, workflow: Any, *, running: Step | None = None
     ) -> ChainReport:
-        """Check the artifact contracts of one workflow (a ``WorkflowConfig``) against
-        the steps registered now. ``running``: the step object about to run, used for
-        its own name instead of the registry, so the check matches what runs even if
-        a plugin reloads in between."""
+        """Check the artifact contracts of one workflow (a ``WorkflowConfig``).
 
-        def contract_for(step_name: str) -> Contract | None:
-            if running is not None and step_name == running.name:
-                return self.contract_for(step_name, running)
-            return self.contract_for(step_name)
+        ``running``: the step object about to run, used for its own name instead of
+        the registered one, so the check judges what runs. The other steps come from
+        one consistent snapshot of the registry (see :meth:`_consistently`)."""
+        return self._consistently(
+            lambda lookup: check_workflow(name, workflow, lookup), running=running
+        )
 
-        return check_workflow(name, workflow, contract_for)
+    def _consistently(
+        self, check: Callable[[Callable[[str], Contract | None]], ChainReport], *, running=None
+    ) -> ChainReport:
+        """Run ``check`` against a snapshot of the registry, and keep its result only
+        if no step was registered or unregistered meanwhile (a plugin reloading):
+        otherwise check again on a new snapshot. One check never mixes steps from
+        before and after a reload. Raises :class:`StepsChanging` if the steps keep
+        changing."""
+        for _ in range(_CONSISTENT_ATTEMPTS):
+            generation, steps = self.registry.snapshot()
+
+            def lookup(step_name: str, steps: dict[str, Step] = steps) -> Contract | None:
+                if running is not None and step_name == running.name:
+                    return self._contract_of(step_name, running)
+                step = steps.get(step_name)
+                return None if step is None else self._contract_of(step_name, step)
+
+            report = check(lookup)
+            if self.registry.generation == generation:
+                return report
+        raise StepsChanging("the registered steps kept changing while being checked")
 
     def resolve_all(self) -> list[tuple[str, Exception]]:
         """Import every lazy step; return ``(name, error)`` for those that fail."""

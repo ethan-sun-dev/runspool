@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import textwrap
 from pathlib import Path
 
@@ -794,3 +795,158 @@ def test_the_step_about_to_run_is_checked_as_that_object():
     workflow = WorkflowConfig(steps=["produce", "consume"])
     assert not service.check_contract("wf", workflow).ok
     assert service.check_contract("wf", workflow, running=Old()).ok
+
+
+# -- a reload in the middle of one check (no mixing of versions) --------------------
+
+MIXED = """
+import threading
+
+from runspool.engine.step import Step, StepResult
+
+STATE = {"version": "old"}
+# Set by the test: the first read of the old p's declaration announces itself on
+# "read" and waits for "go", so a reload can happen in the middle of one check.
+HOOK = {"armed": False, "read": threading.Event(), "go": threading.Event()}
+
+
+class _PausingProvides:
+    def __init__(self, value):
+        self.value = value
+
+    def __get__(self, obj, owner):
+        if obj is not None and HOOK["armed"]:
+            HOOK["armed"] = False
+            HOOK["read"].set()
+            HOOK["go"].wait(10)
+        return self.value
+
+
+def producers(ctx, config):
+    old = STATE["version"] == "old"
+
+    class P(Step):
+        name = "p"
+        provides = _PausingProvides(("master",)) if old else ()
+
+        def run(self, ctx):
+            return StepResult()
+
+    class Q(Step):
+        name = "q"
+        provides = () if old else ("transcript",)
+
+        def run(self, ctx):
+            return StepResult()
+
+    ctx.steps.register(P())
+    ctx.steps.register(Q())
+
+
+producers.inject = ["steps"]
+
+
+class Start(Step):
+    name = "start"
+    provides = ()
+
+    def run(self, ctx):
+        return StepResult()
+
+
+class Consume(Step):
+    name = "consume"
+    requires = ("master", "transcript")
+
+    def run(self, ctx):
+        return StepResult()
+
+
+def consumer(ctx, config):
+    ctx.steps.register(Start())
+    ctx.steps.register(Consume())
+
+
+consumer.inject = ["steps"]
+"""
+
+
+def test_a_reload_during_a_check_cannot_combine_two_versions_into_a_pass(tmp_path, monkeypatch):
+    """Old: p provides master, q nothing (no transcript). New: p nothing, q provides
+    transcript (no master). Each version alone is broken; reading old p and then
+    new q in one check would pass the workflow."""
+    module = "mixed_versions_steps"
+    (tmp_path / f"{module}.py").write_text(MIXED, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, module, raising=False)
+    path = tmp_path / "runspool.yaml"
+    path.write_text(
+        f"workspace_root: {tmp_path / '工作 区'}\n"
+        "workflows:\n  drafts:\n    steps: [start, p, q, consume]\n"
+        "patch:\n  - insert:\n"
+        f"      - {{id: producers, plugin: '{module}:producers'}}\n"
+        f"      - {{id: consumer, plugin: '{module}:consumer'}}\n",
+        encoding="utf-8",
+    )
+    ctx = load_context(path)
+    plugin = sys.modules[module]
+    fiber = next(f for f in ctx.kernel.fibers if f.name == "producers")
+    daemon = ctx.service("runtime").build_daemon()
+    try:
+        tid = ctx.repo.create_task(input="in", workflow="drafts", first_step="start", max_retries=0)
+        assert not _doctor(ctx).ok  # the old version alone is broken
+        plugin.HOOK["armed"] = True
+        daemon.run_once()  # the worker starts checking "start" and stops inside old p
+        assert plugin.HOOK["read"].wait(10)
+        plugin.STATE["version"] = "new"
+        fiber.restart()  # the reload lands in the middle of that check
+        assert not _doctor(ctx).ok  # so is the new one
+        plugin.HOOK["go"].set()
+        daemon.coordinator.pool.drain()
+    finally:
+        plugin.HOOK["go"].set()
+        daemon.coordinator.pool.shutdown(wait=True)
+    task = ctx.repo.get_task(tid)
+    assert ctx.step_runs.list_for_task(tid) == []  # "start" never ran
+    assert task["step"] == "start"
+    assert task["task_status"] in (TaskStatus.MANUAL_REQUIRED, TaskStatus.QUEUED)
+
+
+def test_steps_that_keep_changing_give_no_verdict():
+    """If every snapshot is overtaken by a registration, the check does not guess:
+    it raises StepsChanging (the gate defers the step, doctor says to retry)."""
+    from runspool.config import WorkflowConfig
+    from runspool.core.doctor import DoctorService
+    from runspool.core.steps import StepsChanging, StepsService
+
+    service = StepsService()
+    churn = iter(range(1000))
+
+    class _Churning:
+        def __get__(self, obj, owner):
+            service.registry.register(_named(f"churn_{next(churn)}"))  # a reload, every time
+            return ("master",)
+
+    class Producer(_Plain):
+        name = "producer"
+        provides = _Churning()
+
+    class Consume(_Plain):
+        name = "consume"
+        requires = ("master",)
+
+    service.registry.register(Producer())
+    service.registry.register(Consume())
+    workflow = WorkflowConfig(steps=["producer", "consume"])
+    with pytest.raises(StepsChanging):
+        service.check_contract("wf", workflow)
+
+    class Config:
+        workflows = {"wf": workflow}
+
+    check = DoctorService(Config(), None, service, None)._contracts_check()
+    assert not check.ok and "run doctor again" in check.detail
+
+
+def _named(name):
+    return type(name, (_Plain,), {"name": name})()

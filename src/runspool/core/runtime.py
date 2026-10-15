@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from runspool.config import AppConfig
+from runspool.core.steps import StepsChanging
 from runspool.core.store import Store
 from runspool.daemon import Daemon, read_pid
 from runspool.engine.coordinator import Coordinator
@@ -52,7 +53,11 @@ class Gate:
 
     def __call__(self, request: GateRequest) -> Decision:
         if self._contracts is not None:
-            problem = self._contracts.problem(request.task["workflow"], request.step)
+            try:
+                problem = self._contracts.problem(request.task["workflow"], request.step)
+            except StepsChanging:
+                # Plugins are reloading right now: judge the step on the next round.
+                return Defer("steps are being reloaded; artifact contracts are checked again")
             if problem:
                 return Deny(problem)
         try:
@@ -101,8 +106,10 @@ class WorkflowContracts:
 
     Nothing is cached: plugins can be reloaded while the runtime lives
     (``fiber.restart()``), which changes the registered steps, so every check reads
-    the registry as it is then. The step about to run is checked as the object
-    that will run, not as whatever is registered under its name by then.
+    the registry as it is then, from one consistent snapshot (a check that a reload
+    overlaps starts over; see ``StepsService.check_contract``). The step about to
+    run is checked as the object that will run, not as whatever is registered
+    under its name by then.
     """
 
     def __init__(self, steps: Any, config: AppConfig) -> None:
