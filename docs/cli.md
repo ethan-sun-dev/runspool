@@ -202,6 +202,25 @@ runspool doctor
 runspool doctor --json        # array of {name, ok, detail}
 ```
 
+### `runspool plugins`
+
+List the profile's plugin entries: state (`active`, `pending`, `failed`,
+`skipped`, ...), and what each declares about itself — category, description,
+external dependencies, hosts and its config model's JSON Schema (see
+[plugins.md](plugins.md#describing-a-plugin)).
+
+- `--installed` — also list installed plugins (entry points) the profile does not
+  mount: `id` is `null` and `state` is `available`, or `unavailable` with an
+  `error` when one cannot be loaded here. They are imported to read their
+  metadata, never applied.
+
+```bash
+runspool plugins
+runspool plugins --installed --json   # {"plugins": [{id, plugin, state, error, category,
+                                      #   description, external, hosts, config_schema,
+                                      #   distribution, version}]}
+```
+
 ## Plugin commands
 
 Plugins can contribute commands or command groups. They appear in

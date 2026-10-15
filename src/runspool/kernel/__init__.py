@@ -19,12 +19,13 @@ from runspool.kernel.loader import (
     BUNDLE_GROUP,
     PLUGIN_GROUP,
     Loader,
+    PluginInfo,
     Profile,
     StartupReport,
     check_compat,
     compose_profile,
 )
-from runspool.kernel.plugin import ConfigError, Plugin
+from runspool.kernel.plugin import ConfigError, External, Plugin, PluginMeta, config_schema
 
 __all__ = [
     "BUNDLE_GROUP",
@@ -34,6 +35,7 @@ __all__ = [
     "Composition",
     "Context",
     "Entry",
+    "External",
     "Fiber",
     "FiberState",
     "InactiveEffectError",
@@ -42,6 +44,8 @@ __all__ = [
     "Layer",
     "Loader",
     "Plugin",
+    "PluginInfo",
+    "PluginMeta",
     "PluginShapeError",
     "Profile",
     "ServiceConflict",
@@ -52,5 +56,6 @@ __all__ = [
     "check_compat",
     "compose",
     "compose_profile",
+    "config_schema",
     "deep_merge",
 ]

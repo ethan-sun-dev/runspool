@@ -49,8 +49,10 @@ The kernel accepts any of these:
 | A class | `cls(ctx, config)`; the instance's `dispose()`, if any, runs on unload |
 | A plain function | `fn(ctx, config)` |
 
-For the last three, optional metadata is read from attributes: `name`, `Config`
-and `inject`. `inject` must be a sequence of names, never a single string.
+For the last three, optional metadata is read from attributes: `name`, `Config`,
+`inject`, and the descriptive fields below (`category`, `description`,
+`external`, `hosts`). `inject` and `hosts` must be sequences of names, never a
+single string.
 Prefer `Plugin(...)`: it states name, config model and dependencies in one place.
 
 ## Configuration
@@ -80,6 +82,40 @@ should match pattern '^[A-Z_][A-Z0-9_]*$'`.
 Do not confuse the two configs a plugin sees: `config` (the `apply` argument) is
 the plugin's own, while `ctx.config` is the `config` service, RunSpool's engine
 settings (`workspace_root`, `workflows`, ...).
+
+## Describing a plugin
+
+A plugin may describe itself for catalogs, settings forms and `doctor`. All
+fields are optional, and the kernel never acts on them:
+
+```python
+from runspool.kernel import External, Plugin
+
+plugin = Plugin(
+    name="video-render",
+    apply=apply,
+    Config=RenderConfig,
+    category="media",
+    description="Renders a script and a voice track into a video",
+    external=[External("binary", "ffmpeg", hint="brew install ffmpeg")],
+    hosts=["cli", "desktop"],
+)
+```
+
+- `category` — a free-form group name.
+- `description` — one line saying what the plugin does.
+- `external` — what it needs outside Python, as `External(kind, name, hint="")`
+  values or mappings with those keys. `doctor` checks that every `binary` an
+  active plugin declares is on `PATH` (the `external` check); other kinds are
+  listed, not checked.
+- `hosts` — free-form labels for the environments the plugin is meant to run
+  under, in the application's own terms. RunSpool does not interpret them.
+
+The config model's JSON Schema comes from `runspool.kernel.config_schema(Config)`
+(pydantic models only). `runspool plugins --json` lists all of this for every
+entry, so tooling can build a catalog or a settings form without running the
+plugin. Malformed metadata (a string where a list belongs, an `external` entry
+without `kind` or `name`) is a `PluginShapeError`, like any other bad shape.
 
 ## What a plugin can reach
 

@@ -16,6 +16,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`runspool.db.executor-lock`) and refuse to start while another process holds
   it (`ExecutorBusy`, naming the holder's pid). The OS releases it when the
   holder exits, so there is no stale lock. See `runspool.executor_lock`.
+- Plugin metadata, all optional: `category`, `description`, `external` (what a
+  plugin needs outside Python, as `External(kind, name, hint)`) and `hosts`
+  (free-form environment labels), on `Plugin(...)` or as attributes.
+  `runspool.kernel.config_schema()` gives a config model's JSON Schema.
+- `runspool plugins [--installed] [--json]`: each entry's state and metadata,
+  with its config schema; `--installed` adds installed plugins the profile does
+  not mount (imported, never applied). `Loader.describe()` is the API behind it.
+- `doctor` has an `external` check: every `binary` an active plugin declares
+  must be on `PATH`.
 
 ### Changed
 - Crash recovery runs only in the lock holder, so a second process no longer
