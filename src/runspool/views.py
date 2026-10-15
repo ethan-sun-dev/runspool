@@ -84,6 +84,23 @@ def events_view(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def artifacts_view(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Recorded artifacts (see runspool.engine.artifacts), oldest first."""
+    return [
+        {
+            "id": r["id"],
+            "type": r["type"],
+            "path": r["path"],
+            "sha256": r["sha256"],
+            "size_bytes": r["size_bytes"],
+            "step": r["step"],
+            "step_run_id": r["step_run_id"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
 def event_feed_view(events: list[dict[str, Any]], cursor: int) -> dict[str, Any]:
     """Events for a follower: ids and payloads included, plus the cursor to resume from."""
     items = []

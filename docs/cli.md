@@ -135,6 +135,21 @@ runspool logs 1 --json
 
 - `--limit N` — most recent N events (default 20).
 
+### `runspool artifacts <id>`
+
+The artifacts a task's steps recorded (see
+[Artifact contracts](writing-steps.md#artifact-contracts)): the latest of each
+type, oldest first.
+
+```bash
+runspool artifacts 1
+runspool artifacts 1 --all --json   # every row, including earlier runs
+```
+
+`--json` gives an array of `{id, type, path, sha256, size_bytes, step,
+step_run_id, created_at}`; a task with none gives `[]`, an unknown id
+`{"error": "not_found", ...}` and exit code 1.
+
 ### `runspool overview`
 
 Counts by status.
@@ -194,7 +209,8 @@ database, at least one workflow, that every step referenced by a workflow
 resolves and every configured step imports (this catches typos and broken
 imports), that every enabled plugin is active (and why not), profile warnings
 (unknown settings, patches that matched nothing), and the credentials file's
-permissions. Plugins add their own checks — e.g. whether the credentials they
+permissions. Once a step declares an artifact contract, an `artifacts` check
+reports whether every declared requirement is provided by an earlier step. Plugins add their own checks — e.g. whether the credentials they
 need are configured (names and sources only, never values).
 
 ```bash

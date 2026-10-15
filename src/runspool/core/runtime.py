@@ -118,6 +118,15 @@ class RuntimeService:
                 + "\n  ".join(f"{name}: {type(exc).__name__}: {exc}" for name, exc in failures),
                 report,
             )
+        # Artifact contracts (opt-in: only steps that declare them are checked). A
+        # broken chain would fail mid-workflow; refuse to start instead.
+        contracts = self.steps.check_contracts(self.config.workflows)
+        if contracts.errors:
+            raise StartupError(
+                "cannot run: artifact contracts are not satisfied:\n  "
+                + "\n  ".join(contracts.errors),
+                report,
+            )
 
     def build_coordinator(self, *, notifier: Callable[[str], None] | None = None) -> Coordinator:
         registry = self.steps.registry
@@ -127,7 +136,13 @@ class RuntimeService:
             runner_kwargs["on_approval_asked"] = self.gate.asked
         store = self.store
         runner = TaskRunner(
-            store.repo, store.log, store.step_runs, registry, self.config, **runner_kwargs
+            store.repo,
+            store.log,
+            store.step_runs,
+            registry,
+            self.config,
+            artifacts=getattr(store, "artifacts", None),
+            **runner_kwargs,
         )
         pool = WorkerPool(self.config.worker_pool.size)
         return Coordinator(store.repo, store.log, registry, runner, pool, self.config)

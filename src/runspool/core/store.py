@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from runspool.executor_lock import executor_lock_path
 from runspool.kernel import Plugin
+from runspool.persistence.artifact_log import ArtifactLog
 from runspool.persistence.connection import Database
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
@@ -18,13 +19,16 @@ from runspool.persistence.step_run_log import StepRunLog
 
 class Store:
     """SQLite store. ``repo``, ``log`` and ``step_runs`` are the contract surface;
-    ``db`` is SQLite-specific and only for code that knows it has this store."""
+    ``db`` is SQLite-specific and only for code that knows it has this store.
+    ``artifacts`` (recorded artifacts) is optional for other stores: without it,
+    a step that returns artifacts fails."""
 
     def __init__(self, db: Database) -> None:
         self.db = db
         self.repo = TaskRepository(db)
         self.log = EventLog(db)
         self.step_runs = StepRunLog(db)
+        self.artifacts = ArtifactLog(db)
 
     def check(self) -> str:
         """Raise if the store is unusable; otherwise describe where it lives."""

@@ -30,6 +30,9 @@ class WorkerPoolConfig(BaseModel):
 
 class WorkflowConfig(BaseModel):
     steps: list[str] = Field(min_length=1)
+    # Artifact types the task's input provides before the first step (optional; see
+    # runspool.engine.artifacts). Only artifact contracts read it.
+    inputs: list[str] | None = None
 
 
 class StepPluginConfig(BaseModel):

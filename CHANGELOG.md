@@ -25,6 +25,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not mount (imported, never applied). `Loader.describe()` is the API behind it.
 - `doctor` has an `external` check: every `binary` an active plugin declares
   must be on `PATH`.
+- Artifact contracts, all optional: a step may declare the artifact types it
+  `requires` and `provides` (`master`, `variant:blog`, or with a placeholder
+  `variant:<target>`), and a workflow the types its input provides (`inputs`).
+  `doctor` gains an `artifacts` check, shown only when something declares a
+  contract, and `run` / `daemon` refuse to start while a declared requirement
+  is not provided by an earlier step. See `runspool.engine.artifacts`.
+- `StepResult.artifacts`: a step may record what it produced as
+  `Artifact(type, path, sha256=None)`; the runner hashes files when no sha256 is
+  given and stores type, path, sha256 and size in a new `artifacts` table, tied
+  to the step run. `runspool artifacts <id> [--all] [--json]` lists them.
+- Schema version 4: adds the `artifacts` table. Existing tables are unchanged;
+  a database upgraded to v4 can no longer be opened by 0.2.x.
 
 ### Changed
 - Crash recovery runs only in the lock holder, so a second process no longer

@@ -34,6 +34,7 @@ from runspool.runtime import (
     run_until_idle,
 )
 from runspool.views import (
+    artifacts_view,
     detail_view,
     event_feed_view,
     events_view,
@@ -319,6 +320,37 @@ def events(
         message = f"  {e['message']}" if e["message"] else ""
         typer.echo(f"#{e['id']} task {e['task_id']} {e['event_type']}{step}{message}")
     typer.echo(f"cursor: {feed['cursor']}", err=True)
+
+
+@app.command()
+def artifacts(
+    task_id: int = typer.Argument(...),
+    all_rows: bool = typer.Option(
+        False, "--all", help="Every recorded row, not just the latest of each type."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show the artifacts a task's steps recorded (type, path, sha256)."""
+    ctx = _ctx()
+    if ctx.repo.get_task(task_id) is None:
+        if json_output:
+            _emit_json({"error": "not_found", "id": task_id})
+        else:
+            typer.echo(f"task {task_id} not found")
+        raise typer.Exit(1)
+    log = getattr(ctx.service("store"), "artifacts", None)
+    if log is None:
+        rows = []
+    else:
+        rows = log.list_for_task(task_id) if all_rows else log.latest(task_id)
+    view = artifacts_view(rows)
+    if json_output:
+        _emit_json(view)
+        return
+    if not view:
+        typer.echo(f"task {task_id} has no recorded artifacts")
+    for a in view:
+        typer.echo(f"{a['type']}  {a['path']}  sha256:{a['sha256'][:12]}  ({a['step']})")
 
 
 @app.command()

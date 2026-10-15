@@ -12,9 +12,16 @@ imports every lazy step and reports the ones that fail; ``run``, ``daemon`` and
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
+from runspool.engine.artifacts import (
+    ArtifactTypeError,
+    ChainReport,
+    Contract,
+    check_workflows,
+    contract_of,
+)
 from runspool.engine.registry import StepRegistry
 from runspool.engine.step import Step, StepContext, StepResult
 from runspool.kernel import Plugin
@@ -54,6 +61,14 @@ class LazyStep(Step):
         # with side effects skip approval.
         return bool(getattr(self.resolve(), "side_effect", False))
 
+    @property
+    def requires(self) -> Any:  # type: ignore[override]
+        return getattr(self.resolve(), "requires", None)
+
+    @property
+    def provides(self) -> Any:  # type: ignore[override]
+        return getattr(self.resolve(), "provides", None)
+
     def when(self, task: dict[str, Any], config: Any) -> bool:
         return self.resolve().when(task, config)
 
@@ -83,6 +98,24 @@ class StepsService:
 
     def has(self, name: str) -> bool:
         return self.registry.has(name)
+
+    def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
+        """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``).
+
+        Steps that are not registered, or fail to load, count as declaring nothing
+        (other checks report them)."""
+
+        def contract_for(name: str) -> Contract | None:
+            if not self.registry.has(name):
+                return None
+            try:
+                return contract_of(self.registry.get(name))
+            except ArtifactTypeError:
+                raise
+            except Exception:  # noqa: BLE001 - a step that fails to load is reported elsewhere
+                return None
+
+        return check_workflows(workflows, contract_for)
 
     def resolve_all(self) -> list[tuple[str, Exception]]:
         """Import every lazy step; return ``(name, error)`` for those that fail."""
@@ -114,6 +147,9 @@ class _BoundSteps:
 
     def resolve_all(self) -> list[tuple[str, Exception]]:
         return self._service.resolve_all()
+
+    def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
+        return self._service.check_contracts(workflows)
 
     def side_effect_of(self, name: str) -> bool:
         return self._service.side_effect_of(name)
