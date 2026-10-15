@@ -635,6 +635,12 @@ def _config_path_from(argv: list[str]) -> Path:
     return Path(DEFAULT_CONFIG_FILENAME)
 
 
+# Built-in commands added after plugins could already register commands of their
+# own. A plugin command of the same name predates them, so it wins: the built-in
+# yields instead of breaking that plugin.
+_YIELDING_BUILTINS = frozenset({"artifacts"})
+
+
 def build_app(config_path: Path | str) -> typer.Typer:
     """The CLI for a profile: the built-in commands plus those its plugins register.
 
@@ -662,7 +668,11 @@ def build_app(config_path: Path | str) -> typer.Typer:
     except LookupError:  # the cli entry is disabled: built-in commands only
         contributed_commands = []
     for contributed in contributed_commands:
-        if contributed.name in builtin:
+        if contributed.name in _YIELDING_BUILTINS:
+            combined.registered_commands = [
+                c for c in combined.registered_commands if _command_name(c) != contributed.name
+            ]
+        elif contributed.name in builtin:
             typer.echo(
                 f"warning: plugin {contributed.owner!r} command {contributed.name!r} "
                 "clashes with a built-in command and is ignored",
@@ -701,8 +711,12 @@ def main() -> None:
             booted[1].kernel.dispose()
 
 
+def _command_name(command: Any) -> str:
+    return command.name or command.callback.__name__.replace("_", "-")
+
+
 def _builtin_names() -> set[str]:
-    return {c.name or c.callback.__name__.replace("_", "-") for c in app.registered_commands}
+    return {_command_name(c) for c in app.registered_commands}
 
 
 def _command_in(argv: list[str]) -> str | None:

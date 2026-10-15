@@ -150,6 +150,9 @@ runspool artifacts 1 --all --json   # every row, including earlier runs
 step_run_id, created_at}`; a task with none gives `[]`, an unknown id
 `{"error": "not_found", ...}` and exit code 1.
 
+If a plugin registers its own `artifacts` command, the plugin's command is used
+instead: plugins could register that name before RunSpool had this command.
+
 ### `runspool overview`
 
 Counts by status.
