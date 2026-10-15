@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,8 @@ from runspool.engine.worker_pool import WorkerPool
 from runspool.executor_lock import ExecutorLock, executor_lock_path
 from runspool.kernel import Plugin, StartupError
 from runspool.persistence.state_machine import StateMachine
+
+_contracts_log = logging.getLogger("runspool.contracts")
 
 
 class Gate:
@@ -41,11 +45,16 @@ class Gate:
     a plugin are recorded under that plugin's name.)
     """
 
-    def __init__(self, ctx: Any, steps: Any) -> None:
+    def __init__(self, ctx: Any, steps: Any, config: AppConfig | None = None) -> None:
         self._ctx = ctx
         self._steps = steps
+        self._contracts = WorkflowContracts(steps, config) if config is not None else None
 
     def __call__(self, request: GateRequest) -> Decision:
+        if self._contracts is not None:
+            problem = self._contracts.problem(request.task["workflow"])
+            if problem:
+                return Deny(problem)
         try:
             side_effect = self._steps.side_effect_of(request.step.name)
         except Exception as exc:  # noqa: BLE001 - unknown side effects fail closed
@@ -84,6 +93,44 @@ class Gate:
             approval.requested(task)
 
 
+class WorkflowContracts:
+    """Artifact contracts of the workflow a task belongs to, checked before each of
+    its steps runs (``run`` and the daemon alike, so tasks added after the daemon
+    started are checked too). Doctor checks every workflow; this only the ones
+    that have work. Results are kept per workflow: the steps and workflows of a
+    process do not change after boot."""
+
+    def __init__(self, steps: Any, config: AppConfig) -> None:
+        self._steps = steps
+        self._config = config
+        self._problems: dict[str, str | None] = {}
+        self._lock = threading.Lock()
+
+    def problem(self, workflow: str) -> str | None:
+        """Why the workflow's tasks may not run, or ``None``."""
+        with self._lock:
+            if workflow not in self._problems:
+                self._problems[workflow] = self._check(workflow)
+            return self._problems[workflow]
+
+    def _check(self, workflow: str) -> str | None:
+        definition = self._config.workflows.get(workflow)
+        if definition is None:
+            return None  # an unknown workflow is the scheduler's business
+        report = self._steps.check_contract(workflow, definition)
+        if report.errors:
+            return f"artifact contracts of workflow {workflow!r} are not met: " + "; ".join(
+                report.errors
+            )
+        if report.unverified:
+            _contracts_log.warning(
+                "workflow %r runs with unverified artifact contracts: %s",
+                workflow,
+                "; ".join(report.unverified),
+            )
+        return None
+
+
 class RuntimeService:
     def __init__(
         self, config: AppConfig, store: Store, steps: Any, startup: Any, ctx: Any = None
@@ -93,7 +140,7 @@ class RuntimeService:
         self.steps = steps
         self._startup = startup
         self._ctx = ctx
-        self.gate = Gate(ctx, steps) if ctx is not None else None
+        self.gate = Gate(ctx, steps, config) if ctx is not None else None
 
     def ensure_ready(self) -> None:
         """Refuse to run the engine on a partially loaded plugin set.
@@ -116,15 +163,6 @@ class RuntimeService:
             raise StartupError(
                 "cannot run: some steps failed to load:\n  "
                 + "\n  ".join(f"{name}: {type(exc).__name__}: {exc}" for name, exc in failures),
-                report,
-            )
-        # Artifact contracts (opt-in: only steps that declare them are checked). A
-        # broken chain would fail mid-workflow; refuse to start instead.
-        contracts = self.steps.check_contracts(self.config.workflows)
-        if contracts.errors:
-            raise StartupError(
-                "cannot run: artifact contracts are not satisfied:\n  "
-                + "\n  ".join(contracts.errors),
                 report,
             )
 

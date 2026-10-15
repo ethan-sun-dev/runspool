@@ -19,6 +19,7 @@ from runspool.engine.artifacts import (
     ArtifactTypeError,
     ChainReport,
     Contract,
+    check_workflow,
     check_workflows,
     contract_of,
 )
@@ -99,31 +100,34 @@ class StepsService:
     def has(self, name: str) -> bool:
         return self.registry.has(name)
 
-    def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
-        """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``).
-
-        Steps that are not registered, or fail to load, count as declaring nothing
-        (other checks report them)."""
-
-        def contract_for(name: str) -> Contract | None:
-            if not self.registry.has(name):
-                return None
-            step = self.registry.get(name)
-            if isinstance(step, LazyStep):
-                try:
-                    step = step.resolve()
-                except Exception:  # noqa: BLE001 - a step that fails to load is reported elsewhere
-                    return None
+    def contract_for(self, name: str) -> Contract | None:
+        """A registered step's artifact contract; ``None`` if it is not registered or
+        fails to load (other checks report those). Raises ArtifactTypeError when its
+        declarations are malformed or cannot be read."""
+        if not self.registry.has(name):
+            return None
+        step = self.registry.get(name)
+        if isinstance(step, LazyStep):
             try:
-                return contract_of(step)
-            except ArtifactTypeError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - e.g. a declaration property that raises
-                raise ArtifactTypeError(
-                    f"step {name!r}: cannot read its declarations ({type(exc).__name__})"
-                ) from None
+                step = step.resolve()
+            except Exception:  # noqa: BLE001 - a step that fails to load is reported elsewhere
+                return None
+        try:
+            return contract_of(step)
+        except ArtifactTypeError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - e.g. a declaration property that raises
+            raise ArtifactTypeError(
+                f"step {name!r}: cannot read its declarations ({type(exc).__name__})"
+            ) from None
 
-        return check_workflows(workflows, contract_for)
+    def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
+        """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``)."""
+        return check_workflows(workflows, self.contract_for)
+
+    def check_contract(self, name: str, workflow: Any) -> ChainReport:
+        """Check the artifact contracts of one workflow (a ``WorkflowConfig``)."""
+        return check_workflow(name, workflow, self.contract_for)
 
     def resolve_all(self) -> list[tuple[str, Exception]]:
         """Import every lazy step; return ``(name, error)`` for those that fail."""
@@ -158,6 +162,9 @@ class _BoundSteps:
 
     def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
         return self._service.check_contracts(workflows)
+
+    def check_contract(self, name: str, workflow: Any) -> ChainReport:
+        return self._service.check_contract(name, workflow)
 
     def side_effect_of(self, name: str) -> bool:
         return self._service.side_effect_of(name)

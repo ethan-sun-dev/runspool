@@ -28,9 +28,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Artifact contracts, all optional: a step may declare the artifact types it
   `requires` and `provides` (`master`, `variant:blog`, or with a placeholder
   `variant:<target>`), and a workflow the types its input provides (`inputs`).
-  `doctor` gains an `artifacts` check, shown only when something declares a
-  contract, and `run` / `daemon` refuse to start while a declared requirement
-  is not provided by an earlier step. See `runspool.engine.artifacts`.
+  `doctor` checks every workflow and gains an `artifacts` check, shown only
+  when something declares a contract (malformed declarations included). `run`
+  and the daemon check a task's workflow before each of its steps and refuse
+  the step (`manual_required`, with the reason) while a declared requirement is
+  not provided by an earlier step; other workflows keep running. A workflow
+  mixing declared and undeclared steps may set `allow_unverified` to accept
+  gaps only an undeclared step could fill (reported as unverified). See
+  `runspool.engine.artifacts`.
+- If a plugin registers its own `artifacts` command, it is used instead of the
+  new built-in one.
 - `StepResult.artifacts`: a step may record what it produced as
   `Artifact(type, path, sha256=None)`; the runner hashes files when no sha256 is
   given and stores type, path, sha256 and size in a new `artifacts` table, tied

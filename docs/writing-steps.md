@@ -187,13 +187,22 @@ Placeholder names are labels; they do not bind across steps. A workflow can
 declare what the task's input provides before the first step with `inputs` (see
 [Workflows](workflows.md#validation)).
 
-**Checking the chain.** `runspool doctor` shows an `artifacts` check once any
-step or workflow declares a contract, and `run` and `daemon` refuse to start
-while a declared requirement is not provided by an earlier step. If an earlier
-step declares nothing, it might be the provider: the requirement is reported as
-*unverified* rather than as an error. Conditional steps (`when`) are assumed to
-run. Applications that know their concrete values (the actual targets) can check
-again with `runspool.engine.artifacts.check_chain`.
+**Checking the chain.** `runspool doctor` checks every workflow and shows an
+`artifacts` check once any step or workflow declares a contract (or declares one
+wrongly: `requires = 123` is an error, not "declares nothing"). `run` and the
+daemon check a task's workflow before running each step of it: while a declared
+requirement is not provided by an earlier step, the step is refused and the task
+goes to `manual_required` with the reason; other workflows keep running. Fix the
+workflow, then `runspool retry <id>`.
+
+A workflow none of whose steps declare anything is not checked. In a workflow
+that does declare, a requirement that no earlier step provides is an error even
+when an earlier step declares nothing. If you mix declared steps with older ones
+on purpose, set `allow_unverified: true` on the workflow: such a gap is then
+reported as *unverified* (by `doctor`, and once per process as a warning on the
+`runspool.contracts` logger when its tasks run) instead of refused. Conditional
+steps (`when`) are assumed to run. Applications that know their concrete values
+(the actual targets) can check again with `runspool.engine.artifacts.check_chain`.
 
 **Recording.** Each `Artifact` in `StepResult.artifacts` is stored with its type,
 path, sha256 and size, tied to the step run. A relative `path` is relative to

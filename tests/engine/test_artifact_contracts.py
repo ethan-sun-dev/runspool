@@ -25,7 +25,6 @@ from runspool.engine.artifacts import (
 from runspool.engine.registry import StepRegistry
 from runspool.engine.runner import TaskRunner
 from runspool.engine.step import Step, StepResult
-from runspool.kernel import StartupError
 from runspool.models import TaskStatus
 from runspool.persistence.state_machine import StateMachine
 from runspool.runtime import run_until_idle
@@ -164,11 +163,24 @@ def test_a_requirement_must_come_from_an_earlier_step():
     assert "provided before it: nothing" in report.errors[0]
 
 
-def test_an_undeclared_earlier_step_makes_a_gap_unverified_not_an_error():
+def test_a_gap_after_an_undeclared_step_is_an_error_by_default():
     report = check_chain("wf", ["legacy", "adapt"], _contracts(adapt=(("master",), ())))
+    (error,) = report.errors
+    assert "'master'" in error and "'legacy'" in error and "allow_unverified" in error
+
+
+def test_allow_unverified_turns_that_gap_into_a_note():
+    report = check_chain(
+        "wf", ["legacy", "adapt"], _contracts(adapt=(("master",), ())), allow_unverified=True
+    )
     assert report.ok
     (note,) = report.unverified
     assert "'legacy'" in note and "'master'" in note
+
+
+def test_a_fully_undeclared_chain_is_left_alone():
+    report = check_chain("wf", ["legacy", "other"], _contracts())
+    assert not report.declared and report.ok and not report.unverified
 
 
 def test_workflow_inputs_provide_types_before_the_first_step():
@@ -358,7 +370,7 @@ def _doctor(ctx, name="artifacts"):
     return next((c for c in ctx.service("doctor").run() if c.name == name), None)
 
 
-def test_a_broken_chain_stops_run_and_fails_doctor(profile):
+def test_a_broken_chain_fails_doctor(profile):
     path = profile(
         """
         drafts:
@@ -366,9 +378,6 @@ def test_a_broken_chain_stops_run_and_fails_doctor(profile):
         """
     )
     ctx = load_context(path)
-    with pytest.raises(StartupError, match="artifact contracts are not satisfied") as exc:
-        run_until_idle(ctx)
-    assert "step 'needs_missing' requires 'transcript'" in str(exc.value)
     check = _doctor(ctx)
     assert check is not None and not check.ok
     assert "'needs_missing' requires 'transcript'" in check.detail
@@ -379,12 +388,18 @@ def test_a_broken_chain_stops_run_and_fails_doctor(profile):
     assert by_name["artifacts"]["ok"] is False
 
 
-def test_doctor_reports_a_satisfied_chain_and_unverified_gaps(profile):
+def test_doctor_reports_a_satisfied_chain(profile):
     ctx = load_context(profile("drafts:\n  steps: [fetch, write, adapt]\n"))
     check = _doctor(ctx)
     assert check.ok and check.detail == "every declared requirement is provided"
 
+
+def test_doctor_fails_a_gap_after_an_undeclared_step_unless_allowed(profile):
     ctx = load_context(profile("drafts:\n  steps: [undeclared, write]\n"))
+    check = _doctor(ctx)
+    assert not check.ok and "'write' requires 'source:file'" in check.detail
+
+    ctx = load_context(profile("drafts:\n  allow_unverified: true\n  steps: [undeclared, write]\n"))
     check = _doctor(ctx)
     assert check.ok and check.detail.startswith("unverified:")
     assert "'write' requires 'source:file'" in check.detail
@@ -576,3 +591,71 @@ def test_malformed_workflow_inputs_alone_fail_doctor(profile):
 def test_malformed_inputs_count_as_a_declaration():
     report = check_chain("wf", ["a"], _contracts(), inputs=["Invalid"])
     assert report.declared and not report.ok
+
+
+# -- when run and the daemon check -------------------------------------------------
+
+GOOD_AND_BROKEN = """
+good:
+  steps: [fetch, write]
+broken:
+  steps: [fetch, needs_missing]
+"""
+
+
+def _add(ctx, workflow):
+    return ctx.repo.create_task(
+        input="in.txt", workflow=workflow, first_step="fetch", max_retries=0
+    )
+
+
+def test_run_only_checks_the_workflows_it_executes(profile):
+    ctx = load_context(profile(GOOD_AND_BROKEN))
+    tid = _add(ctx, "good")
+    run_until_idle(ctx)  # the broken workflow has no task: nothing to refuse
+    assert ctx.repo.get_task(tid)["task_status"] == TaskStatus.COMPLETED
+
+
+def test_run_refuses_the_tasks_of_a_broken_workflow_and_says_why(profile, capsys):
+    ctx = load_context(profile(GOOD_AND_BROKEN))
+    good, broken = _add(ctx, "good"), _add(ctx, "broken")
+    run_until_idle(ctx)
+    assert ctx.repo.get_task(good)["task_status"] == TaskStatus.COMPLETED
+    task = ctx.repo.get_task(broken)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert task["step"] == "fetch"  # refused before any step of it ran
+    assert "artifact contracts of workflow 'broken'" in task["last_error"]
+    assert "'needs_missing' requires 'transcript'" in task["last_error"]
+    assert ctx.step_runs.list_for_task(broken) == []
+    assert f"task #{broken}" in capsys.readouterr().err
+
+
+def test_the_daemon_checks_each_task_before_running_it(profile):
+    ctx = load_context(profile(GOOD_AND_BROKEN))
+    daemon = ctx.service("runtime").build_daemon()  # starts despite the broken workflow
+    try:
+        tid = _add(ctx, "broken")  # added after the daemon started
+        daemon.run_once()
+        daemon.coordinator.pool.drain()
+    finally:
+        daemon.coordinator.pool.shutdown(wait=True)
+    task = ctx.repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert "artifact contracts of workflow 'broken'" in task["last_error"]
+
+
+def test_allow_unverified_runs_a_mixed_chain_and_reports_it_once(profile, caplog):
+    ctx = load_context(profile("drafts:\n  allow_unverified: true\n  steps: [undeclared, write]\n"))
+    first = ctx.repo.create_task(
+        input="a", workflow="drafts", first_step="undeclared", max_retries=0
+    )
+    second = ctx.repo.create_task(
+        input="b", workflow="drafts", first_step="undeclared", max_retries=0
+    )
+    with caplog.at_level("WARNING", logger="runspool.contracts"):
+        run_until_idle(ctx)
+    for tid in (first, second):
+        assert ctx.repo.get_task(tid)["task_status"] == TaskStatus.COMPLETED
+    notes = [r.getMessage() for r in caplog.records if r.name == "runspool.contracts"]
+    assert len(notes) == 1
+    assert "workflow 'drafts'" in notes[0] and "unverified" in notes[0]

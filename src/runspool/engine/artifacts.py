@@ -17,10 +17,16 @@ provider counts as providing all of them; an application that knows its concrete
 values can check again with :func:`check_chain` and concrete types.
 
 Contracts are opt-in. A step whose ``requires`` and ``provides`` are both ``None``
-(the default) declares nothing and is not checked. A requirement no earlier step
-provides is an error, unless an earlier step declares nothing (it might be the
-provider): then the requirement is reported as unverified, not as an error.
-Conditional steps (``when``) are assumed to run.
+(the default) declares nothing and is not checked; a workflow none of whose steps
+declare anything is not checked at all. A requirement no earlier step provides is
+an error, also when an earlier step declares nothing. A workflow that mixes
+declared steps with older, undeclared ones may set ``allow_unverified``: such a
+gap is then reported as unverified (by ``doctor``, and once per process when its
+tasks run) instead of refused. Conditional steps (``when``) are assumed to run.
+
+``doctor`` checks every workflow. ``run`` and the daemon check a task's workflow
+before each step of it they run, and refuse the step (the task goes to
+``manual_required``, saying why) while the workflow's contracts are not met.
 """
 
 from __future__ import annotations
@@ -161,6 +167,8 @@ def check_chain(
     steps: Sequence[str],
     contract_for: Callable[[str], Contract | None],
     inputs: Iterable[str] = (),
+    *,
+    allow_unverified: bool = False,
 ) -> ChainReport:
     """Check that every type a step requires is provided before it.
 
@@ -169,6 +177,11 @@ def check_chain(
     those); such a step counts as declaring nothing. It may raise
     :class:`ArtifactTypeError`, which is reported as an error. ``inputs`` are the
     types the task's input provides before the first step.
+
+    A requirement no earlier step provides is an error, even when an earlier step
+    declares nothing. With ``allow_unverified`` (a workflow that mixes declared
+    steps with older ones on purpose) such a requirement, when an undeclared step
+    precedes it, is reported in ``unverified`` instead.
     """
     report = ChainReport()
     inputs = list(inputs) if isinstance(inputs, (list, tuple)) else inputs
@@ -197,15 +210,21 @@ def check_chain(
             if any(have.satisfies(required) for have in available):
                 continue
             where = f"workflow {workflow!r}: step {name!r} requires {str(required)!r}"
-            if silent:
+            undeclared = ", ".join(repr(s) for s in silent)
+            if silent and allow_unverified:
                 report.unverified.append(
-                    f"{where}; no earlier step declares it, but "
-                    f"{', '.join(repr(s) for s in silent)} declare(s) nothing"
+                    f"{where}; no earlier step declares it, but {undeclared} declare(s) nothing"
                 )
                 continue
             offered = ", ".join(f"{t!r} ({p})" for t, p in providers.items()) or "nothing"
+            hint = (
+                f"; {undeclared} declare(s) nothing: declare what they provide, or set "
+                "allow_unverified on the workflow"
+                if silent
+                else ""
+            )
             report.errors.append(
-                f"{where}, which no earlier step provides (provided before it: {offered})"
+                f"{where}, which no earlier step provides (provided before it: {offered}){hint}"
             )
         for provided in contract.provides:
             available.append(provided)
@@ -219,10 +238,21 @@ def check_workflows(
     """Check every workflow of a config (``{name: WorkflowConfig}``)."""
     report = ChainReport()
     for name, workflow in workflows.items():
-        report.extend(
-            check_chain(name, workflow.steps, contract_for, getattr(workflow, "inputs", None) or ())
-        )
+        report.extend(check_workflow(name, workflow, contract_for))
     return report
+
+
+def check_workflow(
+    name: str, workflow: Any, contract_for: Callable[[str], Contract | None]
+) -> ChainReport:
+    """Check one workflow of a config (a ``WorkflowConfig``)."""
+    return check_chain(
+        name,
+        workflow.steps,
+        contract_for,
+        getattr(workflow, "inputs", None) or (),
+        allow_unverified=bool(getattr(workflow, "allow_unverified", False)),
+    )
 
 
 # -- recorded artifacts --------------------------------------------------------------
