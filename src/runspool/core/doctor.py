@@ -121,10 +121,10 @@ class DoctorService:
         """Artifact contracts of every workflow. Only shown once something declares
         one: without declarations doctor reports exactly what it did before."""
         report = self._steps.check_contracts(self._config.workflows)
+        if report.errors:  # whatever ``declared`` says: an error is never hidden
+            return Check("artifacts", False, "; ".join(report.errors))
         if not report.declared:
             return None
-        if report.errors:
-            return Check("artifacts", False, "; ".join(report.errors))
         if report.unverified:
             return Check("artifacts", True, "unverified: " + "; ".join(report.unverified))
         return Check("artifacts", True, "every declared requirement is provided")

@@ -564,3 +564,15 @@ def test_a_malformed_declaration_fails_doctor(profile):
     check = _doctor(ctx)
     assert check is not None and not check.ok
     assert "'bad_declaration'" in check.detail and "not int" in check.detail
+
+
+def test_malformed_workflow_inputs_alone_fail_doctor(profile):
+    ctx = load_context(profile("drafts:\n  inputs: [Invalid]\n  steps: [undeclared]\n"))
+    check = _doctor(ctx)
+    assert check is not None and not check.ok
+    assert "inputs" in check.detail and "'Invalid'" in check.detail
+
+
+def test_malformed_inputs_count_as_a_declaration():
+    report = check_chain("wf", ["a"], _contracts(), inputs=["Invalid"])
+    assert report.declared and not report.ok

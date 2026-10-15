@@ -177,8 +177,8 @@ def check_chain(
     except ArtifactTypeError as exc:
         report.errors.append(str(exc))
         available = []
-    if available:
-        report.declared = True
+    if available or report.errors:
+        report.declared = True  # malformed inputs are a declaration too, and an error
     providers = {str(t): "the workflow inputs" for t in available}
     silent: list[str] = []  # earlier steps that declare nothing
     for name in steps:
