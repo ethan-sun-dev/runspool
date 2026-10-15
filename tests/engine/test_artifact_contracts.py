@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import textwrap
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -266,6 +268,29 @@ class NoFile(Step):
         return StepResult(artifacts=[Artifact("master", "私密/不存在.md")])
 
 
+class Unreadable(Step):
+    name = "unreadable"
+    provides = ("master",)
+
+    def run(self, ctx):
+        out = Path(ctx.config.workspace_root) / "私密 目录" / "母稿.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("x", encoding="utf-8")
+        out.chmod(0)
+        return StepResult(artifacts=[Artifact("master", out)])
+
+
+class Unstatable(Step):
+    name = "unstatable"
+    provides = ("master",)
+
+    def run(self, ctx):
+        out = Path(ctx.config.workspace_root) / "私密 目录" / "母稿.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("x", encoding="utf-8")
+        return StepResult(artifacts=[Artifact("master", out, "ab" * 32)])
+
+
 class Undeclared(Step):
     name = "undeclared"
 
@@ -290,6 +315,8 @@ _CLASSES = {
     "wrong_type": "WrongType",
     "no_file": "NoFile",
     "undeclared": "Undeclared",
+    "unreadable": "Unreadable",
+    "unstatable": "Unstatable",
     "records_then_fails": "RecordsThenFails",
 }
 
@@ -470,3 +497,33 @@ def test_a_store_without_an_artifact_log_fails_a_step_that_records(tmp_path):
     )
     runner.execute(tid)
     assert "does not record artifacts" in ctx.repo.get_task(tid)["last_error"]
+
+
+def _no_paths(ctx, tid, captured):
+    task = ctx.repo.get_task(tid)
+    (run,) = ctx.step_runs.list_for_task(tid)
+    texts = [task["last_error"], run["error"] or "", captured]
+    for text in texts:
+        assert "私密" not in text and str(ctx.config.workspace_root) not in text, text
+    return task["last_error"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads files regardless of permissions")
+def test_an_unreadable_artifact_fails_without_its_path_in_errors_or_logs(profile, capsys):
+    ctx, tid = _run(profile("drafts:\n  steps: [unreadable]\n"), first_step="unreadable")
+    error = _no_paths(ctx, tid, capsys.readouterr().err)
+    assert error.endswith("artifact 1 ('master'): cannot read the file (PermissionError)")
+
+
+def test_a_failing_stat_fails_without_the_path_in_errors_or_logs(profile, capsys, monkeypatch):
+    stat = Path.stat
+
+    def denied(self, *args, **kwargs):
+        if "私密" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    ctx, tid = _run(profile("drafts:\n  steps: [unstatable]\n"), first_step="unstatable")
+    error = _no_paths(ctx, tid, capsys.readouterr().err)
+    assert error.endswith("artifact 1 ('master'): cannot read the file (PermissionError)")

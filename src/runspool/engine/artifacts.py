@@ -26,6 +26,7 @@ Conditional steps (``when``) are assumed to run.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -275,23 +276,30 @@ def prepare_artifacts(
         if provides is not None and not any(kind.satisfies(p) for p in provides):
             declared = ", ".join(repr(str(p)) for p in provides) or "nothing"
             raise ValueError(f"{label} is not a type the step provides (it declares {declared})")
+        if not isinstance(artifact.path, (str, os.PathLike)) or str(artifact.path) == "":
+            raise ValueError(f"{label}: path must be a non-empty str or path")
+        if artifact.sha256 is not None and not (
+            isinstance(artifact.sha256, str) and _SHA256.match(artifact.sha256.lower())
+        ):
+            raise ValueError(f"{label}: sha256 must be 64 hex digits")
         path = Path(artifact.path)
-        if str(artifact.path) == "":
-            raise ValueError(f"{label}: empty path")
         resolved = path if path.is_absolute() else Path(workspace_root) / path
-        size: int | None = None
-        if artifact.sha256 is None:
-            if not resolved.is_file():
-                raise ValueError(f"{label}: no file at its path to hash")
-            digest, size = _hash_file(resolved)
-        else:
-            digest = artifact.sha256.lower()
-            if not _SHA256.match(digest):
-                raise ValueError(f"{label}: sha256 must be 64 hex digits")
-            if resolved.is_file():
-                size = resolved.stat().st_size
+        # Filesystem errors carry the path in their message: report only their class.
+        try:
+            digest, size = _read(resolved, artifact.sha256, label)
+        except OSError as exc:
+            raise ValueError(f"{label}: cannot read the file ({type(exc).__name__})") from None
         prepared.append(RecordedArtifact(str(kind), str(artifact.path), digest, size))
     return prepared
+
+
+def _read(path: Path, sha256: str | None, label: str) -> tuple[str, int | None]:
+    """The artifact's digest and size (``None`` when it is not a file)."""
+    if sha256 is None:
+        if not path.is_file():
+            raise ValueError(f"{label}: no file at its path to hash")
+        return _hash_file(path)
+    return sha256.lower(), path.stat().st_size if path.is_file() else None
 
 
 def _hash_file(path: Path) -> tuple[str, int]:
