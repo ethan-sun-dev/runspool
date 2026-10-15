@@ -4,6 +4,7 @@ them to the worker pool."""
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 from uuid import uuid4
 
@@ -33,6 +34,13 @@ class Coordinator:
         self.runner = runner
         self.pool = pool
         self.config = config
+        # Tasks this process is executing, with the claim token of each run. Only
+        # the executor lock holder schedules, so these are known to be alive:
+        # reclaim_stale never takes them back, however old their heartbeat looks
+        # (e.g. right after the machine wakes from sleep, before the heartbeat
+        # thread has caught up).
+        self._inflight: dict[int, str] = {}
+        self._inflight_lock = threading.Lock()
 
     def tick(self) -> int:
         """Run one scheduling round. Returns the number of tasks submitted to the
@@ -76,12 +84,28 @@ class Coordinator:
             token = uuid4().hex
             if sm.claim(task["id"], worker=f"pool-{task['id']}", token=token):
                 load[step_name] = load.get(step_name, 0) + 1
-                task_id = task["id"]
-                self.pool.submit(
-                    lambda tid=task_id, tok=token: self.runner.execute(tid, claim_token=tok)
-                )
+                self._submit(task["id"], token)
                 progressed += 1
         return progressed
+
+    def _submit(self, task_id: int, token: str) -> None:
+        with self._inflight_lock:
+            self._inflight[task_id] = token
+
+        def job() -> None:
+            try:
+                self.runner.execute(task_id, claim_token=token)
+            finally:
+                with self._inflight_lock:
+                    if self._inflight.get(task_id) == token:
+                        del self._inflight[task_id]
+
+        self.pool.submit(job)
+
+    def _running_here(self, task: dict[str, Any]) -> bool:
+        with self._inflight_lock:
+            token = self._inflight.get(task["id"])
+        return token is not None and token == task["claim_token"]
 
     def _requeue_due_failures(self) -> int:
         """Requeue FAILED tasks whose retry time has arrived. Returns the count."""
@@ -96,6 +120,8 @@ class Coordinator:
 
     def reclaim_stale(self, timeout_seconds: int) -> None:
         for task in self.repo.list_stale_running(timeout_seconds):
+            if self._running_here(task):
+                continue
             sm = self._state_machine_for(task)
             if sm is None:
                 continue

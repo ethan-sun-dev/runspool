@@ -218,18 +218,23 @@ token. Before starting, the runner checks the task is still executing under that
 token; a job that waited in a backlogged pool while its task was reclaimed does
 nothing. Heartbeats, field updates and boundary transitions all require the
 token. `StoreContract` checks exactly-one-winner claiming across threads and
-across processes. `runspool run` refuses to run alongside a live daemon unless
-forced.
+across processes. Only one process executes steps on a database at a time: `run`
+and the daemon both take the executor lock, an OS file lock next to the database
+(`runspool.db.executor-lock`), and refuse to start while another process holds
+it.
 
 **I4.** `should_stop()` signals termination only; pause is never signalled into a
 step. Pause and terminate are flags, and the boundary decision below applies
 them. A pause or terminate requested while the job waited for a worker is
 honoured before the step starts.
 
-**I5.** On daemon start and at the start of every `run`, every `running` or
-`pause_pending` task is settled; each daemon tick also settles tasks whose
-heartbeat is older than `heartbeat_timeout_seconds`, leaving a task alone if its
-heartbeat moves meanwhile. Settling: a terminate request wins (`terminated`); a
+**I5.** On daemon start and at the start of every `run`, once the executor lock
+is held, every `running` or `pause_pending` task is settled; each daemon tick also
+settles tasks whose heartbeat is older than `heartbeat_timeout_seconds`, leaving a
+task alone if its heartbeat moves meanwhile, and never touching a task this
+process is itself running (a laptop waking from sleep sees old heartbeats on its
+own live steps). A schema upgrade of an existing database also waits for the
+lock. Settling: a terminate request wins (`terminated`); a
 pause request, or a task already `pause_pending`, pauses in place; anything else
 is requeued on the same step. The interrupted step run is closed as
 `interrupted`, and clearing the claim token turns the old worker's late finish

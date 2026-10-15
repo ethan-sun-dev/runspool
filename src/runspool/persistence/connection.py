@@ -2,30 +2,49 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from runspool.persistence.schema import migrate
+from runspool.executor_lock import ExecutorLock
+from runspool.persistence.schema import SCHEMA_VERSION, migrate, stored_version
 
 
 class Database:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
 
-    def init(self) -> int:
+    def init(self, *, upgrade_lock: Path | str | None = None) -> int:
         """Create or upgrade the schema; returns the schema version.
 
         The whole upgrade is one ``BEGIN IMMEDIATE`` transaction: concurrent openers
         (a daemon and a CLI) take turns, and each re-reads the version inside it, so
         a migration runs once and an interrupted one leaves nothing half-applied.
+
+        With ``upgrade_lock`` (the executor lock file), an existing database is only
+        upgraded while holding that lock: if another process is executing tasks, this
+        raises :class:`~runspool.executor_lock.ExecutorBusy` instead of changing the
+        schema under it. Opening an up-to-date database never takes the lock.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, isolation_level=None)
+        lock = None
         try:
             _configure(conn)
+            if upgrade_lock is not None:
+                current = stored_version(conn)
+                if 0 < current < SCHEMA_VERSION:
+                    lock = ExecutorLock(upgrade_lock)
+                    # This process may already hold it (an embedded executor that
+                    # opens the database again): then it is ours to upgrade.
+                    if not lock.acquire() and lock.holder() != os.getpid():
+                        raise lock.busy_error(
+                            f"cannot upgrade the database schema (v{current} -> "
+                            f"v{SCHEMA_VERSION}) now"
+                        )
             conn.execute("begin immediate")
             try:
                 version = migrate(conn)
@@ -36,6 +55,8 @@ class Database:
             return version
         finally:
             conn.close()
+            if lock is not None:
+                lock.release()
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

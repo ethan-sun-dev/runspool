@@ -22,6 +22,7 @@ from runspool.display import (
     select_tasks,
 )
 from runspool.doctor import run_doctor
+from runspool.executor_lock import ExecutorBusy
 from runspool.kernel import ConfigError, KernelError
 from runspool.models import TaskStatus
 from runspool.persistence.state_machine import IllegalTransition
@@ -168,13 +169,18 @@ def add(
 @app.command()
 def run(
     json_output: bool = typer.Option(False, "--json", help="Emit a JSON summary."),
-    force: bool = typer.Option(False, "--force", help="Run even if a daemon is active."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Skip the daemon pid check (the executor lock still applies).",
+    ),
 ) -> None:
     """Advance every runnable task once, until no further progress is made."""
     ctx = _ctx()
     # Refuse to run alongside a live daemon: run recovers all RUNNING tasks back
     # to queued, which would yank the daemon's in-flight tasks and execute the
-    # same step twice. --force overrides for the rare deliberate case.
+    # same step twice. The executor lock enforces this for any process that takes
+    # it; the pid check also covers a daemon from a release before the lock.
     if not force and daemon_status(ctx)["running"]:
         typer.echo("daemon is running; refusing to run (use --force to override)")
         raise typer.Exit(1)
@@ -183,6 +189,8 @@ def run(
     notifier = (lambda m: None) if json_output else (lambda m: typer.echo(m))
     try:
         rounds = run_until_idle(ctx, notifier=notifier)
+    except ExecutorBusy as exc:  # a daemon or another run is executing tasks
+        _fail(exc)
     except KernelError as exc:  # steps unavailable because a plugin failed to load
         _fail(exc)
     if json_output:
@@ -513,6 +521,11 @@ def daemon() -> None:
         d = build_daemon(ctx)
     except KernelError as exc:
         _fail(exc)
+    # Take the executor lock before claiming the pid file: a `run` in progress
+    # keeps the daemon from starting rather than racing it.
+    lock = getattr(d, "lock", None)
+    if lock is not None and not lock.acquire():
+        _fail(lock.busy_error("cannot start the daemon"))
     pid_file = daemon_pid_file(ctx)
     write_pid(pid_file, os.getpid())
     _detach_stdin()

@@ -66,9 +66,10 @@ runspool run --json     # {"rounds": N, "tasks": [...]}
 ```
 
 - `--json` — print a JSON summary instead of progress lines.
-- `--force` — run even though a daemon is live. `run` starts by recovering
-  interrupted tasks, which would steal the daemon's in-flight work; use this only
-  when you know the daemon is not executing anything.
+- `--force` — skip the check for a live daemon's pid file. The executor lock
+  still applies: `run` refuses to start while any other process (a daemon,
+  another `run`) is executing tasks on the same database, because it starts by
+  recovering interrupted tasks and would steal that process's in-flight work.
 
 One-shot; ideal for demos, batch processing, and cron. Tasks waiting on a
 deferral delay or a timed retry stay queued for a later `run` or the daemon.

@@ -283,8 +283,11 @@ use that for waiting on a precondition rather than for errors.
 A running step's heartbeat is refreshed on a timer (and whenever the step calls
 `ctx.heartbeat()`; writes are throttled to at most once per second). If a worker
 dies, its task's heartbeat goes stale and the daemon **reclaims** it after
-`worker_pool.heartbeat_timeout_seconds`. When `run` or the daemon starts, every
-task left `running` or `pause_pending` by a previous process is **recovered**.
+`worker_pool.heartbeat_timeout_seconds` (a task the daemon's own process is
+running is never reclaimed, so waking from sleep with old heartbeats is safe).
+When `run` or the daemon starts, it takes the executor lock (one executing
+process per database), then every task left `running` or `pause_pending` by a
+previous process is **recovered**.
 
 Reclaim and recovery settle a task the same way. The interrupted step is assumed
 **not done** (its step run is closed as `interrupted`), and:

@@ -11,6 +11,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   follow events across all tasks from a cursor. Event ids only increase, so a
   client in another process can resume from the last id it saw. `logs --json`
   output is unchanged.
+- Executor lock: only one process executes steps on a database at a time. `run`,
+  `run_until_idle()` and the daemon take an OS file lock next to the database
+  (`runspool.db.executor-lock`) and refuse to start while another process holds
+  it (`ExecutorBusy`, naming the holder's pid). The OS releases it when the
+  holder exits, so there is no stale lock. See `runspool.executor_lock`.
+
+### Changed
+- Crash recovery runs only in the lock holder, so a second process no longer
+  requeues work another process is running.
+- Upgrading the schema of an existing database waits for the executor lock:
+  opening an older database while another process executes tasks raises
+  `ExecutorBusy` instead of changing the schema under it. Up-to-date databases
+  open as before.
+- The daemon never reclaims a task its own process is running, however old the
+  task's heartbeat looks (e.g. right after the machine wakes from sleep).
+- `run --force` now only skips the daemon pid-file check; it no longer lets
+  `run` execute alongside another executor.
 
 ## [0.2.2] - 2026-10-15
 

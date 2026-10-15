@@ -16,6 +16,7 @@ from runspool.engine.coordinator import Coordinator
 from runspool.engine.gate import DECISIONS, Allow, Ask, Decision, Defer, Deny, GateRequest
 from runspool.engine.runner import TaskRunner
 from runspool.engine.worker_pool import WorkerPool
+from runspool.executor_lock import ExecutorLock, executor_lock_path
 from runspool.kernel import Plugin, StartupError
 from runspool.persistence.state_machine import StateMachine
 
@@ -141,7 +142,14 @@ class RuntimeService:
         self.ensure_ready()
         ctx = self._ctx
         on_tick = (lambda tick: ctx.emit("daemon/tick", tick)) if ctx is not None else None
-        return Daemon(self.build_coordinator(), self.config, on_tick=on_tick)
+        return Daemon(
+            self.build_coordinator(), self.config, on_tick=on_tick, lock=self.executor_lock()
+        )
+
+    def executor_lock(self) -> ExecutorLock:
+        """The lock that makes this process the only one executing steps on the
+        database (see :mod:`runspool.executor_lock`)."""
+        return ExecutorLock(executor_lock_path(self.config.database_path))
 
     def recover(self) -> None:
         any_workflow = next(iter(self.config.workflows))
@@ -164,24 +172,36 @@ class RuntimeService:
         so multi-step tasks flow through to completion. Returns the number of rounds
         executed. Intended for one-shot use; long-running or deferred work belongs to
         the daemon. A safety cap prevents an unbounded loop if steps keep deferring.
+
+        It runs only while holding the executor lock: if another process (a daemon,
+        another ``run``) is executing tasks on this database, it raises
+        :class:`~runspool.executor_lock.ExecutorBusy` without touching anything.
+        Crash recovery happens under the lock too, so it never requeues work a live
+        process is running.
         """
         self.ensure_ready()
-        coordinator = self.build_coordinator(notifier=notifier)
-        self.recover()
-        total_tasks = len(self.store.repo.list_all())
-        max_steps = max((len(wf.steps) for wf in self.config.workflows.values()), default=1)
-        cap = max_rounds if max_rounds is not None else total_tasks * max_steps + 50
-        rounds = 0
+        lock = self.executor_lock()
+        if not lock.acquire():
+            raise lock.busy_error("cannot run")
         try:
-            while rounds < cap:
-                submitted = coordinator.tick()
-                coordinator.pool.drain()
-                rounds += 1
-                if submitted == 0:
-                    break
+            coordinator = self.build_coordinator(notifier=notifier)
+            self.recover()
+            total_tasks = len(self.store.repo.list_all())
+            max_steps = max((len(wf.steps) for wf in self.config.workflows.values()), default=1)
+            cap = max_rounds if max_rounds is not None else total_tasks * max_steps + 50
+            rounds = 0
+            try:
+                while rounds < cap:
+                    submitted = coordinator.tick()
+                    coordinator.pool.drain()
+                    rounds += 1
+                    if submitted == 0:
+                        break
+            finally:
+                coordinator.pool.shutdown(wait=True)
+            return rounds
         finally:
-            coordinator.pool.shutdown(wait=True)
-        return rounds
+            lock.release()
 
     # -- daemon process helpers ---------------------------------------------------
 
