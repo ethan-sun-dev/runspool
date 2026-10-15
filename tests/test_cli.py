@@ -1,6 +1,8 @@
 """CLI integration tests via Typer's CliRunner."""
 
 import json
+import signal
+import time
 
 from typer.testing import CliRunner
 
@@ -311,3 +313,144 @@ def test_an_empty_workflow_option_is_an_error_not_the_default(tmp_path):
     result = _invoke(cfg, "add", str(src), "--workflow", "")
     assert result.exit_code == 1
     assert result.output.strip() == "undefined workflow:"
+
+
+def _many_tasks(tmp_path, n):
+    from runspool.app import load_context
+    from tests.support import force_fields
+
+    cfg = _init(tmp_path)
+    ctx = load_context(cfg)
+    for i in range(1, n + 1):
+        ctx.repo.create_task(input=f"in-{i}", workflow="local_file", first_step="ingest_file",
+                             max_retries=1)  # fmt: skip
+    for tid in range(1, n + 1):
+        if tid not in (2, 3):  # 2、3 留着没完成
+            force_fields(ctx.repo, tid, {"task_status": "completed"})
+    force_fields(ctx.repo, 3, {"task_status": "manual_required"})
+    return cfg
+
+
+def _ids(output):
+    import re
+
+    return [int(m.group(1)) for m in re.finditer(r"^#\s*(\d+)", output, flags=re.M)]
+
+
+def test_status_lists_the_newest_20_and_points_at_hidden_unfinished_ones(tmp_path):
+    cfg = _many_tasks(tmp_path, 30)
+    out = _invoke(cfg, "status").output
+    assert _ids(out) == list(range(30, 10, -1))
+    assert "showing 20 of 30" in out
+    assert "2 unfinished not shown (#3, #2); --active lists them" in out
+
+
+def test_status_limit_all_active_and_status_filters(tmp_path):
+    cfg = _many_tasks(tmp_path, 30)
+    assert _ids(_invoke(cfg, "status", "-n", "5").output) == [30, 29, 28, 27, 26]
+    assert len(_ids(_invoke(cfg, "status", "--all").output)) == 30
+    assert "showing" not in _invoke(cfg, "status", "--all").output
+    assert _ids(_invoke(cfg, "status", "--active").output) == [3, 2]
+    assert _ids(_invoke(cfg, "status", "--status", "manual_required").output) == [3]
+    both = _invoke(cfg, "status", "--status", "manual_required", "--status", "queued")
+    assert _ids(both.output) == [3, 2]
+    bad = _invoke(cfg, "status", "--status", "nope")
+    assert bad.exit_code == 1 and "unknown status: nope" in bad.output
+    mixed = _invoke(cfg, "status", "3", "--active")
+    assert mixed.exit_code == 1
+
+
+def test_status_json_still_lists_everything_unless_asked(tmp_path):
+    cfg = _many_tasks(tmp_path, 30)
+    everything = json.loads(_invoke(cfg, "status", "--json").output)
+    assert [t["id"] for t in everything] == list(range(1, 31))
+    newest = json.loads(_invoke(cfg, "status", "--json", "-n", "3").output)
+    assert [t["id"] for t in newest] == [28, 29, 30]
+    active = json.loads(_invoke(cfg, "status", "--json", "--active").output)
+    assert [t["id"] for t in active] == [2, 3]
+
+
+def test_detach_stdin_points_fd0_at_dev_null():
+    """Children of the daemon must not inherit a terminal as stdin (ffmpeg reads it, and
+    a background job that reads the terminal is stopped by SIGTTIN, daemon included)."""
+    import subprocess
+    import sys
+
+    code = (
+        "import os; from runspool.cli import _detach_stdin; _detach_stdin(); "
+        "import subprocess, sys; "
+        "r = subprocess.run([sys.executable, '-c', "
+        "'import os; print(os.path.samestat(os.fstat(0), os.stat(os.devnull)))'], "
+        "capture_output=True, text=True); print(r.stdout.strip())"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], stdin=subprocess.PIPE, capture_output=True, text=True
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "True"  # the grandchild sees /dev/null, not the pipe
+
+
+def test_the_daemon_command_detaches_stdin(tmp_path, monkeypatch):
+    import runspool.cli as cli
+
+    cfg = _init(tmp_path)
+    calls = []
+    monkeypatch.setattr(cli, "_detach_stdin", lambda: calls.append("detached"))
+
+    class _Daemon:
+        def request_stop(self):
+            pass
+
+        def run(self):
+            calls.append("run")
+
+    monkeypatch.setattr(cli, "build_daemon", lambda ctx: _Daemon())
+    result = _invoke(cfg, "daemon")
+    assert result.exit_code == 0, result.output
+    assert calls == ["detached", "run"]
+
+
+def test_daemon_status_reports_a_suspended_daemon(tmp_path, monkeypatch):
+    """A daemon stopped by SIGTTIN looks alive (its pid exists) but schedules nothing."""
+    import os
+
+    import runspool.core.runtime as rt
+    from runspool.app import load_context
+
+    cfg = _init(tmp_path)
+    pid_file = load_context(cfg).service("runtime").pid_file()
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")  # an alive pid
+
+    monkeypatch.setattr(rt, "_pid_state", lambda pid: "S")
+    ok = _invoke(cfg, "daemon-status")
+    assert ok.exit_code == 0 and ok.output.startswith("daemon running")
+    assert json.loads(_invoke(cfg, "daemon-status", "--json").output)["stopped"] is False
+
+    monkeypatch.setattr(rt, "_pid_state", lambda pid: "T")
+    stopped = _invoke(cfg, "daemon-status")
+    assert stopped.exit_code == 1
+    assert "STOPPED" in stopped.output and "kill -CONT -" in stopped.output
+    data = json.loads(_invoke(cfg, "daemon-status", "--json").output)
+    assert data == {"running": True, "pid": os.getpid(), "stopped": True}
+
+
+def test_pid_state_reads_a_real_process():
+    import os
+    import subprocess
+    import sys
+
+    from runspool.core.runtime import _pid_state
+
+    assert _pid_state(os.getpid()) in ("R", "S", "U", "D")
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        os.kill(child.pid, signal.SIGSTOP)
+        for _ in range(50):
+            if _pid_state(child.pid) == "T":
+                break
+            time.sleep(0.05)
+        assert _pid_state(child.pid) == "T"
+    finally:
+        os.kill(child.pid, signal.SIGKILL)
+        child.wait()

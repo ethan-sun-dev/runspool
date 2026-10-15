@@ -14,13 +14,16 @@ from runspool import commands
 from runspool.app import DEFAULT_CONFIG_FILENAME, init_app, load_context
 from runspool.daemon import write_pid
 from runspool.display import (
+    DEFAULT_LIST_LIMIT,
     format_logs,
     format_overview,
     format_task_detail,
     format_task_list,
+    select_tasks,
 )
 from runspool.doctor import run_doctor
 from runspool.kernel import ConfigError, KernelError
+from runspool.models import TaskStatus
 from runspool.persistence.state_machine import IllegalTransition
 from runspool.runtime import (
     build_daemon,
@@ -184,16 +187,49 @@ def run(
 
 @app.command()
 def status(
-    task_id: int = typer.Argument(None, help="Task id; omit to list all tasks."),
+    task_id: int = typer.Argument(None, help="Task id; omit to list tasks."),
+    limit: int = typer.Option(
+        None,
+        "--limit",
+        "-n",
+        min=1,
+        help=f"Newest N tasks (default {DEFAULT_LIST_LIMIT}; JSON: all).",
+    ),
+    all_tasks: bool = typer.Option(False, "--all", help="List every task."),
+    active: bool = typer.Option(
+        False, "--active", help="Only unfinished tasks (queued, running, paused, failed, ...)."
+    ),
+    status_filter: list[str] = typer.Option(
+        None, "--status", help="Only tasks in this status (repeatable)."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
 ) -> None:
-    """Show a task's detail, or list all tasks."""
+    """Show a task's detail, or list tasks (newest first; the latest 20 by default)."""
+    statuses = list(status_filter or [])
+    unknown = sorted(set(statuses) - {s.value for s in TaskStatus})
+    if unknown:
+        typer.echo(
+            f"unknown status: {', '.join(unknown)} "
+            f"(one of: {', '.join(s.value for s in TaskStatus)})"
+        )
+        raise typer.Exit(1)
+    if task_id is not None and (limit or all_tasks or active or statuses):
+        typer.echo("--limit / --all / --active / --status apply to the task list, not to one task")
+        raise typer.Exit(1)
     ctx = _ctx()
     if task_id is None:
         if json_output:
-            _emit_json(list_view(ctx.repo.list_all()))
+            # JSON keeps listing everything unless asked otherwise (scripts rely on it).
+            capped = None if all_tasks else limit
+            tasks = select_tasks(
+                ctx.repo.list_all(), limit=capped, statuses=statuses, active=active
+            )
+            _emit_json(list_view(sorted(tasks, key=lambda t: t["id"])))
         else:
-            typer.echo(format_task_list(ctx.repo))
+            capped = None if all_tasks else (limit or DEFAULT_LIST_LIMIT)
+            typer.echo(
+                format_task_list(ctx.repo, limit=capped, statuses=statuses, active=active)
+            )
         return
     task = ctx.repo.get_task(task_id)
     if task is None:
@@ -406,12 +442,28 @@ def doctor(json_output: bool = typer.Option(False, "--json", help="Emit JSON."))
 
 @app.command(name="daemon-status")
 def daemon_status_cmd(json_output: bool = typer.Option(False, "--json", help="Emit JSON.")) -> None:
-    """Report whether the daemon is running."""
+    """Report whether the daemon is running (exit 1 if its process is suspended)."""
     s = daemon_status(_ctx())
     if json_output:
         _emit_json(s)
-        return
-    typer.echo(f"daemon running (pid={s['pid']})" if s["running"] else "daemon not running")
+    elif s.get("stopped"):
+        group = _process_group(s["pid"])
+        typer.echo(
+            f"daemon process exists (pid={s['pid']}) but is STOPPED: it schedules nothing.\n"
+            f"Resume it with `kill -CONT -{group}`, or stop it (`kill -TERM -{group}; "
+            f"kill -CONT -{group}`) and start it again with stdin from /dev/null."
+        )
+    else:
+        typer.echo(f"daemon running (pid={s['pid']})" if s["running"] else "daemon not running")
+    if s.get("stopped"):
+        raise typer.Exit(1)
+
+
+def _process_group(pid: int) -> int:
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return pid
 
 
 @app.command(name="daemon-stop")
@@ -433,6 +485,7 @@ def daemon() -> None:
         _fail(exc)
     pid_file = daemon_pid_file(ctx)
     write_pid(pid_file, os.getpid())
+    _detach_stdin()
 
     def _handle(signum, frame):
         d.request_stop()
@@ -446,6 +499,24 @@ def daemon() -> None:
         pid_file.unlink(missing_ok=True)
         if ctx.kernel is not None:
             ctx.kernel.dispose()  # let plugins release threads, sockets, files
+
+
+def _detach_stdin() -> None:
+    """Point fd 0 at /dev/null: a resident daemon never reads the terminal.
+
+    Started as a background job (``nohup runspool daemon &``; macOS nohup leaves stdin
+    alone), the daemon would otherwise share the terminal as stdin with every tool its
+    steps run. One that reads it (ffmpeg does by default) gets SIGTTIN, which stops the
+    whole job: the daemon looks alive but schedules nothing. Children inherit fd 0.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.dup2(devnull, 0)
+    finally:
+        os.close(devnull)
 
 
 def _config_path_from(argv: list[str]) -> Path:

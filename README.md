@@ -195,7 +195,7 @@ runspool run                      # advance all runnable tasks once (great for d
 runspool daemon                   # run a resident loop (long-running automation)
 runspool daemon-status            # report whether a daemon is running
 runspool daemon-stop              # signal a running daemon to stop
-runspool status [<id>]            # list tasks, or show one in detail
+runspool status [<id>]            # latest 20 tasks (-n N, --all, --active), or one in detail
 runspool inspect <id>             # agent-friendly snapshot + suggested next action
 runspool logs <id>                # event history for a task
 runspool overview                 # counts by status

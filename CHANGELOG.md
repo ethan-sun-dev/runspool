@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-15
+
+### Changed
+- `runspool status` lists the newest 20 tasks by default instead of every task,
+  with a footer naming unfinished tasks the limit hides. New options: `-n/--limit`,
+  `--all`, `--active` (unfinished only) and `--status` (repeatable).
+  `status --json` still lists every task unless a filter is given.
+
+- `runspool daemon-status` reports a daemon whose process is suspended (state `T`)
+  and exits 1; previously a stopped daemon showed as running. JSON gains `stopped`.
+
+### Fixed
+- The daemon points its stdin at /dev/null. Started as a background job
+  (`nohup runspool daemon &`; macOS nohup keeps the terminal as stdin), a tool a step
+  runs that reads stdin (ffmpeg does by default) got SIGTTIN, which stopped the whole
+  job: the daemon still looked alive but scheduled nothing.
+
 ## [0.2.1] - 2026-10-04
 
 ### Added
@@ -167,7 +184,8 @@ Initial release.
 - Documentation (`docs/`), English + Simplified Chinese READMEs, and CI running
   ruff, pytest (Python 3.11/3.12/3.13), and an example smoke test.
 
-[Unreleased]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ethan-sun-dev/runspool/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ethan-sun-dev/runspool/releases/tag/v0.1.0
