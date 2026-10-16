@@ -482,7 +482,11 @@ def items_submit(
     if file is not None:
         # A file system error's message holds the path: report only its kind.
         try:
-            path = file.expanduser().resolve()
+            try:
+                path = file.expanduser().resolve()
+            except RuntimeError as exc:  # a symlink loop, before Python 3.13
+                typer.echo(f"cannot read the file to submit ({type(exc).__name__})")
+                raise typer.Exit(1) from None
             if not path.is_file():
                 typer.echo("not found: the file to submit")
                 raise typer.Exit(1)

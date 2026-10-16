@@ -809,3 +809,49 @@ def test_a_submission_waits_while_the_steps_quota_is_full(ws, tmp_path):
     finally:
         go.set()
         daemon.coordinator.pool.shutdown(wait=True)
+
+
+def test_items_submit_reports_a_symlink_loop_without_the_path(ws, tmp_path):
+    """Path.resolve() raises RuntimeError (with the path) on a symlink loop before
+    Python 3.13; 3.13 resolves it and the file just does not exist. Either way the
+    command fails cleanly, without the path or a traceback."""
+    import os
+    import subprocess
+
+    ctx, path, _ = ws
+    tid = _new_task(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    item = ctx.items.active_for(tid)
+    token = commands.claim_item(ctx, item["id"], by="agent")
+    loop = tmp_path / "提交 目录" / "循环 链接.md"
+    loop.parent.mkdir(exist_ok=True)
+    loop.symlink_to(loop.name)  # points at itself
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+    code = "import sys; from runspool.cli import main; sys.argv[0] = 'runspool'; main()"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            "-c",
+            str(path),
+            "items",
+            "submit",
+            str(item["id"]),
+            "--token",
+            token,
+            "--file",
+            str(loop),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "循环 链接" not in output and str(tmp_path) not in output
+    assert "Traceback" not in output
+    if sys.version_info < (3, 13):
+        assert "RuntimeError" in output
+    assert ctx.items.get(item["id"])["status"] == "claimed"
