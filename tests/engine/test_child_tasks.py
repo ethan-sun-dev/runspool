@@ -126,7 +126,10 @@ def ws(tmp_path, monkeypatch, request):
         "  parent:\n    steps: [fanout, gate]\n"
         "  unit:\n    steps: [work]\n"
         "  slow_unit:\n    steps: [slow]\n"
-        "  split:\n    steps: [approve_split]\n",
+        "  split:\n    steps: [approve_split]\n"
+        # Names YAML decodes to a lone surrogate, which SQLite cannot store as UTF-8.
+        '  "odd\\uD800":\n    steps: [work]\n'
+        '  odd_first:\n    steps: ["w\\uD800"]\n',
         encoding="utf-8",
     )
     ctx = load_context(path)
@@ -669,3 +672,23 @@ def test_text_that_utf8_cannot_encode_is_refused_before_anything_is_written(ws, 
     pid = _parent(ctx)
     run_until_idle(ctx, notifier=lambda m: None)
     _assert_failed_cleanly(ctx, pid, f"child 1: {field}")
+
+
+@pytest.mark.parametrize(
+    "workflow, field",
+    [("odd\ud800", "workflow"), ("odd_first", "first step")],
+    ids=["workflow", "first_step"],
+)
+def test_a_workflow_or_first_step_name_utf8_cannot_encode_is_refused_first(ws, workflow, field):
+    ctx, _, _, state = ws
+    assert workflow in ctx.config.workflows  # defined, so only its text is wrong
+    state["children"] = [{"input": "/私密/稿件.md", "workflow": workflow}]
+    state["updates"] = {"metadata": {"seen": True}}
+    state["artifact"] = True
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    store = ctx.service("store")
+    assert store.artifacts.list_for_task(pid, include_unfinished=True) == []  # not recorded
+    assert store.artifacts.latest(pid) == []  # so not visible by default either
+    _assert_failed_cleanly(ctx, pid, f"child 1: {field} must be valid UTF-8 text")
+    assert "\ud800" not in ctx.repo.get_task(pid)["last_error"]

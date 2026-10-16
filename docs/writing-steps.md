@@ -287,8 +287,12 @@ every entry a `ChildTask` with a non-empty `input`, a defined `workflow`, a stri
 `name`, a `metadata` that can be stored as a JSON object (string keys: it is
 stored with its keys sorted, and checked the same way) and a non-empty `key` used
 once. A spawn that does not validate fails the step (the error names the child by
-position, never its input) and nothing is created. Text must also be valid UTF-8
-(a lone surrogate, as decoded JSON can contain, is refused). If the store still
+position, never its input) and nothing is created. Every text a child is stored
+with must also be valid UTF-8 (a lone surrogate, as decoded JSON or a YAML
+`\uD800` escape can produce, is refused, without echoing it): its `input`, its
+`workflow` name, the first step of that workflow, its `name`, its `key` and its
+serialized `metadata`. The result's `updates` are not checked this way: if they
+cannot be stored, the transaction below rolls back. If the store still
 fails while writing the transaction, it rolls back (no child, no update) and the
 step fails rather than leaving the task running. If the transaction committed
 and only reading the task back afterwards fails, nothing is undone: the failure

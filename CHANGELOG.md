@@ -94,7 +94,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   spawned when the step fails or defers, or when its boundary terminates the
   task; a spawn that does not validate (not a list or tuple, even if empty or
   falsy; an unknown workflow; a key used twice; metadata that cannot be stored
-  as a JSON object with sorted keys; text that is not valid UTF-8) fails the
+  as a JSON object with sorted keys; an input, workflow name, first step,
+  name, key or metadata that is not valid UTF-8) fails the
   step before any of its result is written, and creates nothing. A spawning
   step's `updates` and the end of its step run are written in the same
   transaction as its children and the parent's transition, so a failed or

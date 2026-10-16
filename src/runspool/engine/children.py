@@ -97,10 +97,13 @@ def plan_children(spawn: Sequence[Any], config: Any) -> tuple[PlannedChild, ...]
         _utf8(where, "input", child.input)
         if not isinstance(child.workflow, str):
             raise ValueError(f"{where}: workflow must be a string")
+        _utf8(where, "workflow", child.workflow)
         try:
             workflow = config.workflow(child.workflow)
         except KeyError:
             raise ValueError(f"{where}: workflow {child.workflow!r} is not defined") from None
+        first_step = workflow.first_step()
+        _utf8(where, "first step", first_step)  # stored as the child's step
         if child.name is not None:
             if not isinstance(child.name, str):
                 raise ValueError(f"{where}: name must be a string")
@@ -128,7 +131,7 @@ def plan_children(spawn: Sequence[Any], config: Any) -> tuple[PlannedChild, ...]
             PlannedChild(
                 input=child.input,
                 workflow=child.workflow,
-                first_step=workflow.first_step(),
+                first_step=first_step,
                 max_retries=config.scheduler.max_retries,
                 name=child.name,
                 metadata=metadata,
