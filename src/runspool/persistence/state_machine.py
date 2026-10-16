@@ -24,8 +24,9 @@ External steps (runspool.engine.external)::
                                    \\--> manual_required (no attempts left)
 
 A work item changes in the same transaction as the task transition that goes with
-it. A transition that terminates a task, or moves it to another step, cancels the
-task's active items.
+it. A transition into a terminal state (completed, partially_completed, terminated:
+e.g. a last external step skipped by its ``when``), or to another step, cancels the
+task's remaining active items; an accepted item is closed first.
 
 Every write is a compare-and-set through ``TaskRepository.transition``: it applies
 only if the task is still in the state this machine read, and it records the
@@ -191,9 +192,11 @@ class StateMachine:
         also: Callable[[Any], None] | None = None,
     ) -> bool:
         if self.items is not None:
-            # A task that is terminated, or moves to another step, leaves its active
-            # work items behind: cancel them with the same transaction.
-            if fields.get("task_status") == TaskStatus.TERMINATED:
+            # A task that finishes (in any terminal state), or moves to another step,
+            # leaves its active work items behind: cancel them in the same
+            # transaction, after the transition's own item change (an accepted item
+            # is closed as accepted first).
+            if fields.get("task_status") in TERMINAL_STATUSES:
                 also = chain(also, self.items.canceller(task_id))
             elif "step" in fields:
                 also = chain(also, self.items.canceller(task_id, keep_step=fields["step"]))

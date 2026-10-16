@@ -76,22 +76,28 @@ class Submission:
     def file(self, workspace_root: Path | str | None = None) -> Path:
         """The submitted file (``value["path"]``, relative paths against
         ``workspace_root``). Rejects the submission if there is no path, the file
-        does not exist, or a submitted ``sha256`` does not match its content.
-        Reasons never include the path."""
+        does not exist or cannot be read (only the kind of error is kept), or a
+        submitted ``sha256`` does not match its content. Reasons never include the
+        path."""
         raw = self.value.get("path")
         if not isinstance(raw, str) or not raw:
             raise SubmissionRejected("the submission has no file path")
         path = Path(raw).expanduser()
         if not path.is_absolute() and workspace_root is not None:
             path = Path(workspace_root) / path
-        if not path.is_file():
-            raise SubmissionRejected("the submitted file does not exist")
         expected = self.value.get("sha256")
-        if expected is not None:
-            if not isinstance(expected, str) or not expected:
-                raise SubmissionRejected("the submitted sha256 is malformed")
-            if sha256_of(path) != expected.lower():
-                raise SubmissionRejected("the submitted file does not match its sha256")
+        try:
+            if not path.is_file():
+                raise SubmissionRejected("the submitted file does not exist")
+            if expected is not None:
+                if not isinstance(expected, str) or not expected:
+                    raise SubmissionRejected("the submitted sha256 is malformed")
+                if sha256_of(path) != expected.lower():
+                    raise SubmissionRejected("the submitted file does not match its sha256")
+        except OSError as exc:  # its message holds the path: keep only the kind
+            raise SubmissionRejected(
+                f"the submitted file cannot be read ({type(exc).__name__})"
+            ) from None
         return path
 
 

@@ -30,7 +30,7 @@ from runspool.engine.artifacts import Artifact
 from runspool.engine.external import ExternalStep, SubmissionRejected, WorkRequest
 from runspool.engine.step import Step, StepResult
 
-STATE = {"crash": False}
+STATE = {"crash": False, "run_last": True}
 
 
 class Draft(Step):
@@ -66,6 +66,20 @@ class Review(ExternalStep):
         )
 
 
+class LastReview(Review):
+    name = "last_review"
+
+    def when(self, task, config):
+        return STATE["run_last"]
+
+
+class Degrade(Step):
+    name = "degrade"
+
+    def run(self, ctx):
+        return StepResult(degraded=True, message="only partly")
+
+
 class Finish(Step):
     name = "finish"
     requires = ("review",)
@@ -85,13 +99,21 @@ def ws(tmp_path, monkeypatch, request):
     path.parent.mkdir()
     steps = "".join(
         f'  {n}:\n    import: "{module}:{c}"\n'
-        for n, c in (("draft", "Draft"), ("review", "Review"), ("finish", "Finish"))
+        for n, c in (
+            ("draft", "Draft"),
+            ("review", "Review"),
+            ("finish", "Finish"),
+            ("last_review", "LastReview"),
+            ("degrade", "Degrade"),
+        )
     )
     path.write_text(
         f"workspace_root: {tmp_path / '工作 区'}\n"
         "scheduler:\n  max_retries: 0\n"
         f"steps:\n{steps}"
-        "workflows:\n  drafts:\n    steps: [draft, review, finish]\n",
+        "workflows:\n  drafts:\n    steps: [draft, review, finish]\n"
+        "  tail:\n    steps: [draft, last_review]\n"
+        "  tail_degraded:\n    steps: [degrade, last_review]\n",
         encoding="utf-8",
     )
     ctx = load_context(path)
@@ -592,3 +614,92 @@ def test_a_plugin_command_named_items_replaces_the_built_in_one(tmp_path, monkey
     result = CliRunner().invoke(build_app(cfg), ["-c", str(cfg), "items"])
     assert result.exit_code == 0, result.output
     assert result.output.strip() == "plugin items"
+
+
+# -- a task that finishes without its item -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "workflow, final",
+    [("tail", TaskStatus.COMPLETED), ("tail_degraded", TaskStatus.PARTIALLY_COMPLETED)],
+)
+def test_skipping_a_last_external_step_cancels_its_item(ws, tmp_path, workflow, final):
+    ctx, _, module = ws
+    tid = commands.add_task(ctx, "稿件 尾", workflow=workflow)
+    run_until_idle(ctx, notifier=lambda m: None)
+    item = ctx.items.active_for(tid)
+    assert item["step"] == "last_review"
+    _submit(ctx, item["id"], *_file(tmp_path, "good"))
+    sys.modules[module].STATE["run_last"] = False  # its condition no longer holds
+    run_until_idle(ctx, notifier=lambda m: None)
+    assert _status(ctx, tid) == final
+    assert ctx.items.get(item["id"])["status"] == "cancelled"
+    assert ctx.items.active_for(tid) is None
+    assert ctx.items.list_items(statuses=("open", "claimed", "submitted")) == []
+
+
+def test_accepting_the_last_external_step_finishes_with_the_item_accepted(ws, tmp_path):
+    ctx, _, _ = ws
+    tid = commands.add_task(ctx, "稿件 尾", workflow="tail")
+    run_until_idle(ctx, notifier=lambda m: None)
+    item = ctx.items.active_for(tid)
+    _submit(ctx, item["id"], *_file(tmp_path, "good"))
+    run_until_idle(ctx, notifier=lambda m: None)
+    assert _status(ctx, tid) == TaskStatus.COMPLETED
+    assert ctx.items.get(item["id"])["status"] == "accepted"
+
+
+# -- file system errors never put the submitted path anywhere ------------------------
+
+
+def _everything_said(ctx, tid, notes):
+    task = ctx.repo.get_task(tid)
+    said = [task["last_error"] or ""]
+    events = ctx.log.list_for_task(tid, limit=100)
+    said += [f"{e['message']} {e.get('payload_json')}" for e in events]
+    said += [f"{r['error']} {r['note']}" for r in ctx.step_runs.list_for_task(tid)]
+    said += [f"{i['error']} {i['previous_error']}" for i in ctx.items.list_items(task_id=tid)]
+    return "\n".join(said + notes)
+
+
+def test_a_file_that_cannot_be_read_is_rejected_without_its_path(ws, tmp_path, monkeypatch):
+    import runspool.engine.external as external
+
+    ctx, _, _ = ws
+    tid = _new_task(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    item = ctx.items.active_for(tid)
+    path, sha = _file(tmp_path, "good", name="秘密 文件.md")
+    _submit(ctx, item["id"], path, sha)
+
+    def denied(p):
+        raise PermissionError(13, "Permission denied", str(p))
+
+    monkeypatch.setattr(external, "sha256_of", denied)
+    notes: list[str] = []
+    run_until_idle(ctx, notifier=notes.append)
+    said = _everything_said(ctx, tid, notes)
+    assert "秘密 文件" not in said  # not in last_error, events, step runs, items, notices
+    rejected = ctx.items.get(item["id"])
+    assert rejected["status"] == "rejected"
+    assert rejected["error"] == "the submitted file cannot be read (PermissionError)"
+    assert ctx.items.active_for(tid)["previous_error"] == rejected["error"]
+
+
+def test_a_file_that_disappears_after_the_check_is_rejected_without_its_path(tmp_path, monkeypatch):
+    import runspool.engine.external as external
+
+    target = tmp_path / "消失 的.md"
+    target.write_text("x", encoding="utf-8")
+    real = external.sha256_of
+
+    def vanish(p):
+        p.unlink()  # gone between the existence check and the read
+        return real(p)
+
+    monkeypatch.setattr(external, "sha256_of", vanish)
+    sub = Submission(1, 1, {"path": str(target), "sha256": "0" * 64})
+    with pytest.raises(SubmissionRejected) as caught:
+        sub.file()
+    assert caught.value.reason == "the submitted file cannot be read (FileNotFoundError)"
+    assert "消失" not in caught.value.reason
