@@ -70,6 +70,7 @@ running             a worker is executing the current step
 pause_pending       pause requested while running (applies at the step boundary)
 paused              paused; resume returns it to queued
 awaiting_approval   the next step has side effects and waits for approve / reject
+awaiting_external   an external step waits for its work item to be submitted
 failed              a step failed and an automatic retry is scheduled
 manual_required     retries exhausted, or the step was refused; needs a human (or agent)
 terminated          stopped permanently
@@ -90,6 +91,9 @@ add ─► queued ─claim─► running ─┬─ step returned ──► queue
                                 │                └─► manual_required   (retries exhausted)
                                 ├─ needs approval ─► awaiting_approval ─approve─► queued
                                 │                                     └─reject──► manual_required
+                                ├─ external step ──► awaiting_external ─submit─► queued
+                                │                    (then: accepted ─► next step; rejected ─►
+                                │                     next attempt, or manual_required)
                                 └─ gate refused ───► manual_required
 
 running ─pause─► pause_pending ─(step boundary)─► paused ─resume─► queued
@@ -124,7 +128,8 @@ AI agent included):
 | `wake` | `queued` and waiting on a delay (`next_retry_at` set) |
 | `approve` | `awaiting_approval`, for the step it is waiting on |
 | `reject` | `awaiting_approval` |
-| `set-step` | `failed`, `manual_required`; with `--force` also `queued`, `paused` — never `running`, `pause_pending`, `awaiting_approval` or a finished task |
+| `set-step` | `failed`, `manual_required`; with `--force` also `queued`, `paused` — never `running`, `pause_pending`, `awaiting_approval`, `awaiting_external` or a finished task |
+| `items submit` | `awaiting_external`, for a work item claimed with that token |
 | `set-retries` | any state (sets the ceiling and resets `retry_count`) |
 
 For example, `retry` on a `completed` task is rejected rather than silently

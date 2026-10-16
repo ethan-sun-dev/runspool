@@ -181,8 +181,8 @@ Each is checked by the state machine; an action not valid for the task's current
 status is refused with the reason and a non-zero exit (the allowed states are in
 [concepts.md](concepts.md#state-machine)). `set-step` works on `failed` and
 `manual_required` tasks; `--force` also allows `queued` and `paused`, but never
-a running, awaiting-approval or finished task. Moving a task clears any approval
-it held.
+a running, awaiting-approval, awaiting-external or finished task. Moving a task
+clears any approval it held and cancels its active work item.
 
 `approve` and `reject` record who decided (`cli:<your user name>`) in the
 task's `approval_decided` event; `--reason` is kept there and in `last_error`.
@@ -192,6 +192,33 @@ runspool approve 3
 runspool reject 3 --reason "wrong cover image"
 runspool wake 7
 ```
+
+## External work items
+
+Work items are opened by [external steps](writing-steps.md#external-steps): work
+done outside the engine, by an agent or a person.
+
+```bash
+runspool items                      # open, claimed or submitted items
+runspool items --all --task 3 --json
+runspool items show 5 [--json]      # instructions, payload, previous_error, submission
+runspool items claim 5 [--by NAME] [--json]   # prints the claim token
+runspool items submit 5 --token T --file result.md   # or --value TEXT / --json-value JSON
+runspool items release 5 --token T  # give it back (--force: anyone's claim)
+```
+
+`items --json` gives an array of `{id, task_id, step, status, kind, attempt,
+max_attempts, previous_error, error, claimed_by, claimed_at, submitted_by,
+submitted_at, created_at, updated_at}`; `items show --json` adds `instructions`,
+`payload`, `submission` and `step_run_id`. The claim token is only printed by
+`claim`. Status: `open`, `claimed`, `submitted`, then `accepted`, `rejected`,
+`exhausted` (rejected with no attempts left) or `cancelled`.
+
+`submit` only records the result and queues the task; the step checks it when
+the task next runs (`runspool run` or the daemon). Claiming an item someone else
+holds, submitting without the right token, or acting on a closed item fails with
+the reason and exit code 1. If a plugin registers its own `items` command, the
+plugin's command is used instead.
 
 ## Introspection
 

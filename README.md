@@ -165,7 +165,9 @@ A **task** carries an `input` through a **workflow** — an ordered list of
 **steps**. The **coordinator** claims queued tasks (respecting per-step
 concurrency quotas), the **worker pool** runs each step, and the **state
 machine** records every transition. A step with side effects waits in
-`awaiting_approval` until you `runspool approve` it. Long jobs run under the
+`awaiting_approval` until you `runspool approve` it; an *external* step (done by
+an agent or a person) waits in `awaiting_external` until its work item is
+submitted (`runspool items`). Long jobs run under the
 `daemon`; one-shot runs use `run`.
 
 ## Task lifecycle
@@ -177,6 +179,7 @@ queued → running → (next step) queued → … → completed | partially_comp
                  ↘ manual_required          (retries exhausted; needs you)
                  ↘ awaiting_approval ──approve──→ queued   (side-effect step)
                                      ──reject───→ manual_required
+                 ↘ awaiting_external ──submit───→ queued   (external step; validated next run)
    running → pause_pending → paused → (resume) queued
    non-terminal → terminated   (terminal states refuse further control)
 ```

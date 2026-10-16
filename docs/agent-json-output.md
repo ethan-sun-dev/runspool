@@ -70,6 +70,7 @@ from `available_actions`, optionally follows `suggested_next_action`, and acts.
 | `failed` | `retry`, `set-step`, `terminate` |
 | `manual_required` | `retry`, `set-step`, `set-retries`, `terminate` |
 | `awaiting_approval` | `approve`, `reject`, `terminate` |
+| `awaiting_external` | `items`, `terminate` |
 | `completed` / `partially_completed` / `terminated` | (none) |
 
 `partially_completed` means every step ran but at least one reported that it could
@@ -78,6 +79,13 @@ not fully do its job; the `note` of its degraded step run says why.
 `awaiting_approval` means the next step has side effects outside RunSpool (it
 publishes, uploads, sends) and must be approved by a human first. An automated
 caller should not approve on its own; surface `suggested_next_action` to a person.
+
+`awaiting_external` means the current step is done outside the engine: its work
+item (see `runspool items show <id>`, named in `suggested_next_action`) says what
+to do. An agent claims it (`runspool items claim <id> --json` gives the
+`claim_token`), does the work, and submits it (`runspool items submit <id> --token
+T --file PATH`); the step checks it when the task next runs. A rejected submission
+opens the next attempt, whose `previous_error` says what to fix.
 
 ## Other JSON commands
 

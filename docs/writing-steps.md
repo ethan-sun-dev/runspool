@@ -230,6 +230,78 @@ Rows are never updated: a step that runs again records again. Read them with
 `degraded` (it failed after recording, the process died) are left out unless you
 pass `include_unfinished=True`.
 
+## External steps
+
+Optional. Some steps are done outside the engine: an AI agent writes a draft, a
+person checks it. Subclass `ExternalStep`: instead of `run`, it says what it asks
+for (`request`) and how to check what comes back (`validate`).
+
+```python
+from runspool.engine.artifacts import Artifact
+from runspool.engine.external import ExternalStep, SubmissionRejected, WorkRequest
+
+
+class Proofread(ExternalStep):
+    name = "proofread"
+    max_attempts = 3                      # rejections before a human is needed
+
+    def request(self, ctx: StepContext) -> WorkRequest:
+        return WorkRequest(
+            kind="human",                 # a free label for clients
+            instructions="Proofread the draft and save the result as a file.",
+            payload={"draft": ctx.task["input"], "attempt": ctx.attempt},
+        )
+
+    def validate(self, ctx: StepContext, submission) -> StepResult:
+        path = submission.file(ctx.config.workspace_root)   # checks sha256 if given
+        if not path.read_text(encoding="utf-8").strip():
+            raise SubmissionRejected("the file is empty")
+        return StepResult(message="proofread", artifacts=[Artifact("proofread", path)])
+```
+
+**How it runs.** When a task reaches the step, the engine opens a *work item*
+from `request(ctx)` and the task waits in `awaiting_external` (no worker is
+held). A client then:
+
+1. lists open items (`runspool items`) and reads one (`runspool items show <id>`:
+   `instructions`, `payload`, and `previous_error` from a rejected attempt);
+2. claims it (`runspool items claim <id>`): of several clients racing for an
+   item exactly one wins, and gets a claim token;
+3. submits a JSON object with that token (`runspool items submit <id> --token T
+   --file PATH`, which submits `{"path", "sha256"}`; `--value TEXT` submits
+   `{"value": TEXT}`; `--json-value` any object).
+
+Submitting only records the submission and queues the task. Validation runs in
+the executor (`run` or the daemon), like any step code, after the start-up checks
+and under the executor lock; it never runs in the submitting process.
+
+**Validation.** `validate(ctx, submission)` gets a `Submission` (`item_id`,
+`attempt`, `value`, `submitted_by`):
+
+- return a `StepResult`: accepted. The workflow advances exactly as if the step
+  had run and returned it (`updates`, `artifacts`, `degraded`, `message`); the
+  check is recorded as a step run.
+- raise `SubmissionRejected(reason)`: that attempt is used up (a step run with
+  status `rejected`). A new item opens for the next attempt with the reason as
+  `previous_error`. After `max_attempts` rejections the task goes to
+  `manual_required`; `runspool retry` starts again at attempt 1. Rejections do
+  not count against `max_retries`.
+- raise anything else: an ordinary step failure (retried per `max_retries`). The
+  submission is kept and validated again on the next try.
+
+`Submission.file(root)` resolves `value["path"]` (relative to `root`), and rejects
+the submission when the path is missing, the file does not exist, or a given
+`sha256` does not match; its reasons never contain the path.
+
+An external step can declare `requires` / `provides` like any step, and what its
+validator records is checked against `provides`. `side_effect = True` asks for
+approval before the item is opened. Terminating a waiting task, or moving a task
+to another step, cancels its active item; a waiting task cannot be paused.
+
+Clients that are not the command line use the same functions:
+`runspool.commands.claim_item`, `release_item`, `submit_item` and `get_item`, and
+`store.items` (`list_items`, `active_for`) to read.
+
 ## Registering a step from config
 
 The 0.1 way still works: put your step in a module, then point config at it.
