@@ -865,12 +865,11 @@ def main() -> None:
     import sys
 
     argv = sys.argv[1:]
-    if _asks_for_version(argv):
+    version = _version_answer(argv)
+    if version is not None:
         # Before the profile boots: booting opens (and may migrate, irreversibly)
         # the database, creates the workspace and applies plugins.
-        from runspool import __version__
-
-        typer.echo(f"runspool {__version__}")
+        sys.stdout.write(version)
         raise SystemExit(0)
     cli = build_app(_config_path_from(argv))
     failed = _STATE.get("boot_error")
@@ -901,21 +900,33 @@ def _builtin_names() -> set[str]:
     return commands_ | {g.name for g in app.registered_groups if g.name}
 
 
-def _asks_for_version(argv: list[str]) -> bool:
-    """``--version`` among the global options (those before the command)."""
-    skip = False
-    for arg in argv:
-        if skip:
-            skip = False
-            continue
-        if arg in ("-c", "--config-path"):
-            skip = True
-            continue
-        if arg == "--version":
-            return True
-        if not arg.startswith("-"):
-            return False  # the command: what follows is its own
-    return False
+def _version_answer(argv: list[str]) -> str | None:
+    """What ``--version`` prints, if the global options make Typer answer with it.
+
+    The built-in app parses the global options as the full one would (the same
+    root options, eager ones in the order given, the same syntax checks), without
+    booting the profile or running a command, and with its output held back. Only
+    if ``--version`` is what it answers with is that answer given; otherwise
+    (``--help`` first, a bad option, ``--version`` after the command) ``None``,
+    and the full CLI parses the arguments, exactly as without ``--version``."""
+    if "--version" not in argv:
+        return None
+    import contextlib
+    import io
+
+    from runspool import __version__
+
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            typer.main.get_command(app).make_context("runspool", list(argv))
+    except Exception as exc:  # noqa: BLE001 - an eager option's exit, or a usage error
+        # Click's Exit (from Typer's own copy of Click in recent versions, so not
+        # imported here) carries exit_code; a usage error is reported by the full CLI.
+        answer = out.getvalue()
+        if getattr(exc, "exit_code", None) == 0 and answer == f"runspool {__version__}\n":
+            return answer
+    return None
 
 
 def _command_in(argv: list[str]) -> str | None:

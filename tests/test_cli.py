@@ -559,3 +559,47 @@ def test_version_never_boots_the_profile_or_touches_the_database(tmp_path):
     assert version == ("3",)
     assert not (tmp_path / "新 工作区").exists()
     assert not (tmp_path / "applied.marker").exists()
+
+
+def _console(tmp_path, *args):
+    """``runspool <args>`` through the console entry point, in ``tmp_path``."""
+    import os
+    import subprocess
+    import sys
+
+    main = "import sys; from runspool.cli import main; sys.argv[0] = 'runspool'; main()"
+    env = {**os.environ, "COLUMNS": "100", "TERM": "dumb"}
+    return subprocess.run(
+        [sys.executable, "-c", main, *args],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        check=False,
+    )
+
+
+def test_version_combined_with_other_global_options_parses_as_without_it(tmp_path):
+    """``--version`` answers early only when Typer would answer with it: an eager
+    ``--help`` before it still wins, and a bad option is still a usage error."""
+    import runspool
+
+    version = f"runspool {runspool.__version__}\n"
+    (tmp_path / "config.yaml").write_text("workspace_root: ./ws\n", encoding="utf-8")
+
+    def outcome(*args):
+        done = _console(tmp_path, *args)
+        return done.returncode, done.stdout, done.stderr
+
+    help_alone = outcome("--help")
+    assert help_alone[0] == 0 and "Usage:" in help_alone[1]
+    assert outcome("--help", "--version") == help_alone
+    invalid_alone = outcome("--definitely-invalid")
+    assert invalid_alone[0] == 2 and "--definitely-invalid" in invalid_alone[2]
+    assert outcome("--definitely-invalid", "--version") == invalid_alone
+    assert outcome("--version", "--help") == (0, version, "")
+    assert outcome("--version") == (0, version, "")
+    assert outcome("-c", "config.yaml", "--version") == (0, version, "")
+    assert outcome("--config-path=config.yaml", "--version") == (0, version, "")
+    after_command = outcome("status", "--version")  # the command's option, not global
+    assert after_command[0] == 2 and "No such option" in after_command[2]
