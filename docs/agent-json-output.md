@@ -85,6 +85,7 @@ caller should not approve on its own; surface `suggested_next_action` to a perso
 runspool status --json        # array of every task (add -n N / --active / --status to filter)
 runspool status <id> --json   # one task + events + step_runs
 runspool logs <id> --json     # array of events
+runspool artifacts <id> --json  # recorded artifacts: [{type, path, sha256, ...}]
 runspool events --since N --json  # {"events": [...], "cursor": M}: events after id N, oldest first
 runspool overview --json      # {"queued": 2, "completed": 5, ...}
 runspool workflows --json     # {"local_file": ["ingest_file", ...]}

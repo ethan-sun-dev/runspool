@@ -9,6 +9,18 @@ plugins as the ``config`` service. A profile without ``bundles`` gets the defaul
 Layer order: bundles (profile order) -> the profile's ``steps:`` map (as the
 ``config-steps`` entry, after every bundle so built-in steps register first) ->
 the profile's own patch -> command-line overlays.
+
+The plugin set is fixed once the runtime starts executing (``run``, the daemon:
+see ``RuntimeService.ensure_ready``). Until then, code embedding RunSpool may still
+load plugins into the booted kernel, as before. Every later change to the loaded
+plugins (reloading one with ``fiber.restart()``, loading or unloading one, providing
+or withdrawing a service, registering or unregistering a step) is refused before it
+changes anything, whether or not any workflow uses artifact contracts: plugin
+changes take effect when the runtime (``run``, the daemon) restarts. This is a
+deliberate boundary. Artifact contracts are therefore always checked against the
+steps registered when the runtime started; what a reloaded plugin would declare is only known
+after its old version is gone, so a reload cannot be judged in advance. A change
+refused this way is listed by doctor.
 """
 
 from __future__ import annotations
@@ -74,6 +86,20 @@ class StartupInfo:
     def __init__(self, loader: Loader) -> None:
         self.loader = loader
         self.warnings: list[str] = []
+        # Plugin changes refused since the runtime started (the plugin set is fixed).
+        self.refused_changes: list[str] = []
+        self._fixed = False
+
+    def plugins_changing(self) -> bool:
+        """Whether plugins are being loaded or unloaded right now."""
+        return self.loader.kernel.changing
+
+    def fix_plugin_set(self) -> None:
+        """From now on refuse every change to the loaded plugins (see the module
+        docstring). Called when the runtime starts executing; idempotent."""
+        if not self._fixed:
+            self._fixed = True
+            self.loader.kernel.guard_changes(_fixed_plugin_set(self))
 
     def report(self) -> StartupReport:
         return self.loader.report()
@@ -157,3 +183,19 @@ def boot(config_path: Path | str, *, overlays: Iterable[Path] = ()) -> Booted:
     if absent:
         raise StartupError(f"no active plugin provides {', '.join(absent)}", report)
     return Booted(kernel, loader, config, profile, composition, report)
+
+
+PLUGINS_FIXED = (
+    "the plugin set is fixed once the runtime has started; plugin changes take effect "
+    "after restarting the runtime (run, or the daemon)"
+)
+
+
+def _fixed_plugin_set(startup: StartupInfo):
+    """Refuse every plugin change after startup, and remember it for doctor."""
+
+    def guard(what: str) -> str:
+        startup.refused_changes.append(what)
+        return PLUGINS_FIXED
+
+    return guard

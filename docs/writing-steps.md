@@ -37,6 +37,7 @@ class MyStep(Step):
 | `message` | A short human-readable line. It is shown in notifications and kept as the step run's **note** (in the `status` timeline and the JSON `step_runs`). |
 | `updates` | Optional task field updates, limited to `name`, `priority`, `max_retries`, `progress` and `metadata`. Anything else — status, step, retry bookkeeping, locks — fails the step on purpose: those belong to the state machine. `metadata` must be a dict and **replaces** the task's metadata, so merge yourself: `{**ctx.task["metadata"], "key": value}`. |
 | `degraded` | `True` when the step returned without fully doing its job (an optional input was missing, a best-effort upload failed). The run is recorded as `degraded`, the workflow continues, and the task ends `partially_completed` instead of `completed`. |
+| `artifacts` | Optional: the artifacts the step produced, as `Artifact(type, path, sha256=None)` values, recorded in the database. See [Artifact contracts](#artifact-contracts). |
 
 Steps never touch the database. A step gets no store, no task service and no
 state machine — only `StepContext` in and `StepResult` out. The runner writes
@@ -149,6 +150,85 @@ class PublishStep(Step):
 ```
 
 A skipped step advances the workflow without running.
+
+## Artifact contracts
+
+Optional. A step can declare the artifact types it needs from earlier steps and
+the ones it produces, and record what it actually produced. Steps that declare
+nothing behave exactly as before and are not checked.
+
+```python
+from runspool.engine.artifacts import Artifact
+
+
+class Adapt(Step):
+    name = "adapt"
+    requires = ("master",)              # needs a "master" from an earlier step
+    provides = ("variant:<target>",)   # produces one variant per target
+
+    def run(self, ctx: StepContext) -> StepResult:
+        out = write_variant(ctx, target="blog")       # your code
+        return StepResult(artifacts=[Artifact("variant:blog", out)])
+```
+
+**Types.** A type is a `kind` (`master`, `transcript`) or `kind:param`
+(`variant:blog`). Kinds are lower-case letters, digits, `_`, `.` and `-`,
+starting with a letter; a param is a value of letters, digits, `_`, `.` and `-`,
+or a placeholder in angle brackets (`variant:<target>`) that stands for any
+value. A requirement is met by an earlier step that provides:
+
+| Required | Met by |
+| --- | --- |
+| `master` | `master` only (not `master:x`) |
+| `variant:<target>` | any `variant:...` |
+| `variant:blog` | `variant:blog`, or a placeholder `variant:<...>` |
+
+Placeholder names are labels; they do not bind across steps. A workflow can
+declare what the task's input provides before the first step with `inputs` (see
+[Workflows](workflows.md#validation)).
+
+**Checking the chain.** `runspool doctor` checks every workflow and shows an
+`artifacts` check once any step or workflow declares a contract (or declares one
+wrongly: `requires = 123` is an error, not "declares nothing"). `run` and the
+daemon check a task's workflow before running each step of it: while a declared
+requirement is not provided by an earlier step, the step is refused and the task
+goes to `manual_required` with the reason; other workflows keep running. Fix the
+workflow, then `runspool retry <id>`.
+
+**Checked against the steps registered when the runtime started.** This is a
+deliberate boundary. The plugin set is fixed once `run` or the daemon starts,
+whether or not any workflow uses contracts: reloading a plugin
+(`fiber.restart()`), loading or unloading one, providing or withdrawing a
+service, and registering or unregistering a step all raise
+`PluginChangeRefused` before anything changes, and `doctor` (in the same
+process) reports a `plugin changes` check saying a restart is needed. Restart
+`run` or the daemon for plugin changes to take effect, including a change that
+adds the first contract.
+
+A workflow none of whose steps declare anything is not checked. In a workflow
+that does declare, a requirement that no earlier step provides is an error even
+when an earlier step declares nothing. If you mix declared steps with older ones
+on purpose, set `allow_unverified: true` on the workflow: such a gap is then
+reported as *unverified* (by `doctor`, and once per process as a warning on the
+`runspool.contracts` logger when its tasks run) instead of refused. Conditional
+steps (`when`) are assumed to run. Applications that know their concrete values
+(the actual targets) can check again with `runspool.engine.artifacts.check_chain`.
+
+**Recording.** Each `Artifact` in `StepResult.artifacts` is stored with its type,
+path, sha256 and size, tied to the step run. A relative `path` is relative to
+`workspace_root` and is stored as given; non-ASCII paths are fine. Leave `sha256`
+out and the runner hashes the file, which must exist; pass it for something the
+runner cannot read (a directory you hashed yourself). The step fails, and none of
+its artifacts are recorded, when an artifact has a malformed or placeholder type,
+a type the step does not declare in `provides` (a step that declares nothing may
+record any concrete type), a missing file to hash or a malformed `sha256`.
+Errors name the artifact by position and type, never by path.
+
+Rows are never updated: a step that runs again records again. Read them with
+`runspool artifacts <id> [--all] --json`, or `store.artifacts.latest(task_id)` /
+`list_for_task(task_id)` in code. Rows of a run that did not end `ok` or
+`degraded` (it failed after recording, the process died) are left out unless you
+pass `include_unfinished=True`.
 
 ## Registering a step from config
 

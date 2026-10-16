@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,8 @@ from runspool.engine.worker_pool import WorkerPool
 from runspool.executor_lock import ExecutorLock, executor_lock_path
 from runspool.kernel import Plugin, StartupError
 from runspool.persistence.state_machine import StateMachine
+
+_contracts_log = logging.getLogger("runspool.contracts")
 
 
 class Gate:
@@ -41,11 +45,16 @@ class Gate:
     a plugin are recorded under that plugin's name.)
     """
 
-    def __init__(self, ctx: Any, steps: Any) -> None:
+    def __init__(self, ctx: Any, steps: Any, config: AppConfig | None = None) -> None:
         self._ctx = ctx
         self._steps = steps
+        self._contracts = WorkflowContracts(steps, config) if config is not None else None
 
     def __call__(self, request: GateRequest) -> Decision:
+        if self._contracts is not None:
+            problem = self._contracts.problem(request.task["workflow"], request.step)
+            if problem:
+                return Deny(problem)
         try:
             side_effect = self._steps.side_effect_of(request.step.name)
         except Exception as exc:  # noqa: BLE001 - unknown side effects fail closed
@@ -84,6 +93,50 @@ class Gate:
             approval.requested(task)
 
 
+class WorkflowContracts:
+    """Artifact contracts of the workflow a task belongs to, checked before each of
+    its steps runs (``run`` and the daemon alike, so tasks added after the daemon
+    started are checked too). Doctor checks every workflow; this only the ones
+    that have work.
+
+    The registry is the one the runtime started with: plugin changes
+    (``fiber.restart()`` and the like) are refused until the runtime restarts
+    (see ``runspool.core.boot``). The step about to run is
+    checked as the object that will run, not as whatever is registered under its
+    name by then.
+    """
+
+    def __init__(self, steps: Any, config: AppConfig) -> None:
+        self._steps = steps
+        self._config = config
+        # Unverified gaps already warned about, per workflow: warn once, not on
+        # every step.
+        self._warned: dict[str, tuple[str, ...]] = {}
+        self._lock = threading.Lock()
+
+    def problem(self, workflow: str, step: Any = None) -> str | None:
+        """Why ``step`` of a task of ``workflow`` may not run now, or ``None``."""
+        definition = self._config.workflows.get(workflow)
+        if definition is None:
+            return None  # an unknown workflow is the scheduler's business
+        report = self._steps.check_contract(workflow, definition, running=step)
+        if report.errors:
+            return f"artifact contracts of workflow {workflow!r} are not met: " + "; ".join(
+                report.errors
+            )
+        unverified = tuple(report.unverified)
+        with self._lock:
+            changed = unverified and self._warned.get(workflow) != unverified
+            self._warned[workflow] = unverified
+        if changed:
+            _contracts_log.warning(
+                "workflow %r runs with unverified artifact contracts: %s",
+                workflow,
+                "; ".join(unverified),
+            )
+        return None
+
+
 class RuntimeService:
     def __init__(
         self, config: AppConfig, store: Store, steps: Any, startup: Any, ctx: Any = None
@@ -93,7 +146,7 @@ class RuntimeService:
         self.steps = steps
         self._startup = startup
         self._ctx = ctx
-        self.gate = Gate(ctx, steps) if ctx is not None else None
+        self.gate = Gate(ctx, steps, config) if ctx is not None else None
 
     def ensure_ready(self) -> None:
         """Refuse to run the engine on a partially loaded plugin set.
@@ -102,8 +155,20 @@ class RuntimeService:
         lazily registered step imports cleanly. A failed plugin may have been meant to
         provide or override a step; running without it could silently run the wrong
         step. Disable plugins you do not want instead.
+
+        Once ready, the plugin set is fixed: later plugin changes are refused. So the
+        runtime cannot start while plugins are still being loaded or unloaded (from
+        inside a plugin's ``apply`` or a disposer): what that plugin registers next
+        would not be fixed yet. Nothing is started or fixed then.
         """
         report = self._startup.report()
+        changing = getattr(self._startup, "plugins_changing", None)
+        if callable(changing) and changing():
+            raise StartupError(
+                "cannot run: plugins are still being loaded or unloaded; start the runtime "
+                "after loading has finished (not from inside a plugin's apply or disposer)",
+                report,
+            )
         problems = report.lines()
         if problems:
             raise StartupError(
@@ -118,8 +183,23 @@ class RuntimeService:
                 + "\n  ".join(f"{name}: {type(exc).__name__}: {exc}" for name, exc in failures),
                 report,
             )
+        # From here on the plugin set is fixed: every plugin change is refused until
+        # the runtime restarts, so steps (and their artifact contracts) are the ones
+        # checked now (see runspool.core.boot).
+        fix = getattr(self._startup, "fix_plugin_set", None)
+        if callable(fix):
+            fix()
 
     def build_coordinator(self, *, notifier: Callable[[str], None] | None = None) -> Coordinator:
+        """A coordinator (task runner + worker pool) that executes steps. Like every
+        way to start executing, it first passes :meth:`ensure_ready` (which refuses
+        while plugins are loading, and fixes the plugin set), so nothing executes
+        steps from a plugin set that is still changing."""
+        self.ensure_ready()
+        return self._build_coordinator(notifier=notifier)
+
+    def _build_coordinator(self, *, notifier: Callable[[str], None] | None = None) -> Coordinator:
+        """Build without checking; callers have passed :meth:`ensure_ready`."""
         registry = self.steps.registry
         runner_kwargs: dict[str, Any] = {"notifier": notifier} if notifier is not None else {}
         if self.gate is not None:
@@ -127,7 +207,13 @@ class RuntimeService:
             runner_kwargs["on_approval_asked"] = self.gate.asked
         store = self.store
         runner = TaskRunner(
-            store.repo, store.log, store.step_runs, registry, self.config, **runner_kwargs
+            store.repo,
+            store.log,
+            store.step_runs,
+            registry,
+            self.config,
+            artifacts=getattr(store, "artifacts", None),
+            **runner_kwargs,
         )
         pool = WorkerPool(self.config.worker_pool.size)
         return Coordinator(store.repo, store.log, registry, runner, pool, self.config)
@@ -143,7 +229,7 @@ class RuntimeService:
         ctx = self._ctx
         on_tick = (lambda tick: ctx.emit("daemon/tick", tick)) if ctx is not None else None
         return Daemon(
-            self.build_coordinator(), self.config, on_tick=on_tick, lock=self.executor_lock()
+            self._build_coordinator(), self.config, on_tick=on_tick, lock=self.executor_lock()
         )
 
     def executor_lock(self) -> ExecutorLock:
@@ -184,7 +270,7 @@ class RuntimeService:
         if not lock.acquire():
             raise lock.busy_error("cannot run")
         try:
-            coordinator = self.build_coordinator(notifier=notifier)
+            coordinator = self._build_coordinator(notifier=notifier)
             self.recover()
             total_tasks = len(self.store.repo.list_all())
             max_steps = max((len(wf.steps) for wf in self.config.workflows.values()), default=1)

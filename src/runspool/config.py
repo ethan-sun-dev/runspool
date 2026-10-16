@@ -30,6 +30,12 @@ class WorkerPoolConfig(BaseModel):
 
 class WorkflowConfig(BaseModel):
     steps: list[str] = Field(min_length=1)
+    # Artifact types the task's input provides before the first step (optional; see
+    # runspool.engine.artifacts). Only artifact contracts read it.
+    inputs: list[str] | None = None
+    # Accept a requirement that only an undeclared earlier step could provide (a
+    # workflow mixing declared and older steps): report it as unverified, not refuse.
+    allow_unverified: bool = False
 
 
 class StepPluginConfig(BaseModel):

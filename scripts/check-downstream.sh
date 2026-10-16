@@ -10,7 +10,19 @@
 #
 #   echo ../my-app >> .downstream
 #   bash scripts/check-downstream.sh
+#
+# --no-sync runs `uv run --no-sync pytest`: the downstream environment is used as
+# it is, never synced. Use it for a project whose environment a running process
+# depends on (syncing would change it underneath that process).
 set -uo pipefail
+
+uv_args=()
+for arg in "$@"; do
+  case "$arg" in
+    --no-sync) uv_args+=(--no-sync) ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
@@ -41,7 +53,7 @@ for project in "${projects[@]}"; do
     continue
   fi
   echo "==> $project"
-  if (cd "$dir" && uv run pytest -q); then
+  if (cd "$dir" && uv run ${uv_args[@]+"${uv_args[@]}"} pytest -q); then
     echo "OK   [$project]"
   else
     echo "FAIL [$project]"

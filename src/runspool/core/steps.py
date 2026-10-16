@@ -8,13 +8,25 @@ registering plugin, leaving the first registration in place.
 use, so commands that only read task state never import step code. ``resolve_all``
 imports every lazy step and reports the ones that fail; ``run``, ``daemon`` and
 ``doctor`` call it before relying on the registry.
+
+Once the application has started, registering or unregistering a step is a change
+to the loaded plugins and goes through the kernel's change guard, which refuses
+it: the plugin set is fixed once started (see ``runspool.core.boot``).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
+from runspool.engine.artifacts import (
+    ArtifactTypeError,
+    ChainReport,
+    Contract,
+    check_workflow,
+    check_workflows,
+    contract_of,
+)
 from runspool.engine.registry import StepRegistry
 from runspool.engine.step import Step, StepContext, StepResult
 from runspool.kernel import Plugin
@@ -54,6 +66,14 @@ class LazyStep(Step):
         # with side effects skip approval.
         return bool(getattr(self.resolve(), "side_effect", False))
 
+    @property
+    def requires(self) -> Any:  # type: ignore[override]
+        return getattr(self.resolve(), "requires", None)
+
+    @property
+    def provides(self) -> Any:  # type: ignore[override]
+        return getattr(self.resolve(), "provides", None)
+
     def when(self, task: dict[str, Any], config: Any) -> bool:
         return self.resolve().when(task, config)
 
@@ -83,6 +103,50 @@ class StepsService:
 
     def has(self, name: str) -> bool:
         return self.registry.has(name)
+
+    def contract_for(self, name: str) -> Contract | None:
+        """The artifact contract of the step registered under ``name``; ``None`` if
+        it is not registered or fails to load (other checks report those). Raises
+        ArtifactTypeError when its declarations are malformed or cannot be read."""
+        if not self.registry.has(name):
+            return None
+        return self._contract_of(name, self.registry.get(name))
+
+    def _contract_of(self, name: str, step: Step) -> Contract | None:
+        if isinstance(step, LazyStep):
+            try:
+                step = step.resolve()
+            except Exception:  # noqa: BLE001 - a step that fails to load is reported elsewhere
+                return None
+        try:
+            return contract_of(step)
+        except ArtifactTypeError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - e.g. a declaration property that raises
+            raise ArtifactTypeError(
+                f"step {name!r}: cannot read its declarations ({type(exc).__name__})"
+            ) from None
+
+    def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
+        """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``)
+        against the registered steps."""
+        return check_workflows(workflows, self.contract_for)
+
+    def check_contract(
+        self, name: str, workflow: Any, *, running: Step | None = None
+    ) -> ChainReport:
+        """Check the artifact contracts of one workflow (a ``WorkflowConfig``).
+
+        ``running``: the step object about to run, used for its own name instead of
+        the registered one, so the check judges what runs. The other steps are the
+        registered ones."""
+
+        def lookup(step_name: str) -> Contract | None:
+            if running is not None and step_name == running.name:
+                return self._contract_of(step_name, running)
+            return self.contract_for(step_name)
+
+        return check_workflow(name, workflow, lookup)
 
     def resolve_all(self) -> list[tuple[str, Exception]]:
         """Import every lazy step; return ``(name, error)`` for those that fail."""
@@ -115,6 +179,14 @@ class _BoundSteps:
     def resolve_all(self) -> list[tuple[str, Exception]]:
         return self._service.resolve_all()
 
+    def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
+        return self._service.check_contracts(workflows)
+
+    def check_contract(
+        self, name: str, workflow: Any, *, running: Step | None = None
+    ) -> ChainReport:
+        return self._service.check_contract(name, workflow, running=running)
+
     def side_effect_of(self, name: str) -> bool:
         return self._service.side_effect_of(name)
 
@@ -145,6 +217,8 @@ class _BoundSteps:
             raise TypeError(f"{instance!r} is not a runspool Step")
         registry = self._service.registry
         side_effects = self._service._side_effects
+        fiber = self._ctx.fiber
+        fiber.check_change(f"register step {instance.name!r}")
 
         def register() -> Callable[[], None]:
             registry.register(instance)
@@ -157,7 +231,9 @@ class _BoundSteps:
 
             return unregister
 
-        return self._ctx.effect(register, label=f"step:{instance.name}")
+        return fiber.effect(
+            register, label=f"step:{instance.name}", change=f"unregister step {instance.name!r}"
+        )
 
 
 plugin = Plugin(name="steps", apply=lambda ctx, config: ctx.provide("steps", StepsService()))

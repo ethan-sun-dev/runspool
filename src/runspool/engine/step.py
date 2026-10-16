@@ -10,9 +10,12 @@ write artifacts to the filesystem, and report back through the result.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from runspool.engine.artifacts import Artifact
 
 
 @dataclass
@@ -46,11 +49,17 @@ class StepResult:
     input was missing, an optional upload failed). The run is recorded as degraded
     and the task, once every step has run, ends ``partially_completed`` instead of
     ``completed``. ``message`` is kept as the run's note.
+
+    ``artifacts`` records what the step produced, as
+    :class:`~runspool.engine.artifacts.Artifact` values (type, path, optional
+    sha256); see :mod:`runspool.engine.artifacts`. An artifact that fails
+    validation fails the step, and none of its artifacts are recorded.
     """
 
     message: str = ""
     updates: dict[str, Any] = field(default_factory=dict)
     degraded: bool = False
+    artifacts: Sequence[Artifact] = ()
 
 
 class Step(ABC):
@@ -66,6 +75,12 @@ class Step(ABC):
     # message, creating a draft on a platform). Such a step runs only after a human
     # approves that attempt (``runspool approve``); see runspool.engine.gate.
     side_effect: bool = False
+    # Artifact contract (optional): the artifact types this step needs from earlier
+    # steps and the ones it produces, such as ("transcript",) or ("variant:<target>",).
+    # Both None (the default) means the step declares nothing and is not checked.
+    # See runspool.engine.artifacts.
+    requires: Sequence[str] | None = None
+    provides: Sequence[str] | None = None
 
     def when(self, task: dict[str, Any], config: Any) -> bool:
         return True

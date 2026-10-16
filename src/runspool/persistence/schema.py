@@ -107,10 +107,33 @@ def _v3_approval(conn: sqlite3.Connection) -> None:
     _add_column(conn, "tasks", "approval_grant", "text")
 
 
+def _v4_artifacts(conn: sqlite3.Connection) -> None:
+    # artifacts: what steps recorded producing (StepResult.artifacts), one row each.
+    # step_run_id ties a row to the run that produced it, so readers can ignore rows
+    # from a run that did not finish (see runspool.persistence.artifact_log).
+    conn.execute(
+        """
+        create table if not exists artifacts (
+            id integer primary key autoincrement,
+            task_id integer not null references tasks(id),
+            step text not null,
+            step_run_id integer references step_runs(id),
+            type text not null,
+            path text not null,
+            sha256 text not null,
+            size_bytes integer,
+            created_at text not null default (datetime('now'))
+        )
+        """
+    )
+    conn.execute("create index if not exists idx_artifacts_task on artifacts(task_id)")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _v1_baseline),
     (2, _v2_metadata_and_parent),
     (3, _v3_approval),
+    (4, _v4_artifacts),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

@@ -7,10 +7,12 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 from runspool.clock import utcnow_text
+from runspool.engine.artifacts import contract_of, prepare_artifacts
 from runspool.engine.gate import Allow, Ask, Decision, Defer, Deny, GateRequest
 from runspool.engine.registry import StepRegistry
 from runspool.engine.step import StepContext, StepDeferred
@@ -52,6 +54,7 @@ class TaskRunner:
         heartbeat_interval: float | None = None,
         gate: Callable[[GateRequest], Decision] | None = None,
         on_approval_asked: Callable[[dict[str, Any]], None] | None = None,
+        artifacts: Any = None,
     ) -> None:
         self.repo = repo
         self.log = log
@@ -64,6 +67,9 @@ class TaskRunner:
         # (fail closed) rather than run unapproved.
         self._gate = gate
         self._on_approval_asked = on_approval_asked
+        # Where StepResult.artifacts are recorded (an ArtifactLog). A store without
+        # one cannot record them: a step that returns artifacts then fails.
+        self._artifacts = artifacts
         # Refresh the heartbeat on a timer while a step runs, independent of
         # whether the step cooperatively calls ctx.heartbeat(). Default to a
         # third of the reclaim timeout so a healthy long step is never reclaimed.
@@ -155,6 +161,8 @@ class TaskRunner:
             finally:
                 stop_beat.set()
                 beat.join()
+            if result.artifacts:
+                self._record_artifacts(task, step, run_id, result.artifacts)
             if result.updates:
                 self.repo.update_fields(task_id, result.updates, token=claim_token)
         except StepDeferred as deferred:
@@ -247,6 +255,23 @@ class TaskRunner:
             self._notify(after, f"step {step} done, paused before {after['step']}")
         elif status == TaskStatus.QUEUED:
             self._notify(after, f"step {step} done, advancing to {after['step']}{tail}")
+
+    def _record_artifacts(
+        self, task: dict[str, Any], step: Any, run_id: int, artifacts: Any
+    ) -> None:
+        """Validate, hash and store a step's artifacts; raise (failing the step) if any
+        is invalid. They are tied to this run, so if the run does not end ``ok`` or
+        ``degraded`` readers skip them."""
+        if self._artifacts is None:
+            raise RuntimeError("the active store does not record artifacts")
+        contract = contract_of(step)
+        recorded = prepare_artifacts(
+            list(artifacts),
+            step=task["step"],
+            provides=contract.provides if contract.declared else None,
+            workspace_root=Path(self.config.workspace_root),
+        )
+        self._artifacts.record(task["id"], task["step"], recorded, step_run_id=run_id)
 
     def _beat_loop(self, task_id: int, stop: threading.Event, token: str | None) -> None:
         # Periodically refresh heartbeat_at until signalled to stop. Best-effort:

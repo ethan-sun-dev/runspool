@@ -34,6 +34,7 @@ from runspool.runtime import (
     run_until_idle,
 )
 from runspool.views import (
+    artifacts_view,
     detail_view,
     event_feed_view,
     events_view,
@@ -322,6 +323,37 @@ def events(
 
 
 @app.command()
+def artifacts(
+    task_id: int = typer.Argument(...),
+    all_rows: bool = typer.Option(
+        False, "--all", help="Every recorded row, not just the latest of each type."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show the artifacts a task's steps recorded (type, path, sha256)."""
+    ctx = _ctx()
+    if ctx.repo.get_task(task_id) is None:
+        if json_output:
+            _emit_json({"error": "not_found", "id": task_id})
+        else:
+            typer.echo(f"task {task_id} not found")
+        raise typer.Exit(1)
+    log = getattr(ctx.service("store"), "artifacts", None)
+    if log is None:
+        rows = []
+    else:
+        rows = log.list_for_task(task_id) if all_rows else log.latest(task_id)
+    view = artifacts_view(rows)
+    if json_output:
+        _emit_json(view)
+        return
+    if not view:
+        typer.echo(f"task {task_id} has no recorded artifacts")
+    for a in view:
+        typer.echo(f"{a['type']}  {a['path']}  sha256:{a['sha256'][:12]}  ({a['step']})")
+
+
+@app.command()
 def inspect(
     task_id: int = typer.Argument(...),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
@@ -603,6 +635,12 @@ def _config_path_from(argv: list[str]) -> Path:
     return Path(DEFAULT_CONFIG_FILENAME)
 
 
+# Built-in commands added after plugins could already register commands of their
+# own. A plugin command of the same name predates them, so it wins: the built-in
+# yields instead of breaking that plugin.
+_YIELDING_BUILTINS = frozenset({"artifacts"})
+
+
 def build_app(config_path: Path | str) -> typer.Typer:
     """The CLI for a profile: the built-in commands plus those its plugins register.
 
@@ -630,7 +668,11 @@ def build_app(config_path: Path | str) -> typer.Typer:
     except LookupError:  # the cli entry is disabled: built-in commands only
         contributed_commands = []
     for contributed in contributed_commands:
-        if contributed.name in builtin:
+        if contributed.name in _YIELDING_BUILTINS:
+            combined.registered_commands = [
+                c for c in combined.registered_commands if _command_name(c) != contributed.name
+            ]
+        elif contributed.name in builtin:
             typer.echo(
                 f"warning: plugin {contributed.owner!r} command {contributed.name!r} "
                 "clashes with a built-in command and is ignored",
@@ -669,8 +711,12 @@ def main() -> None:
             booted[1].kernel.dispose()
 
 
+def _command_name(command: Any) -> str:
+    return command.name or command.callback.__name__.replace("_", "-")
+
+
 def _builtin_names() -> set[str]:
-    return {c.name or c.callback.__name__.replace("_", "-") for c in app.registered_commands}
+    return {_command_name(c) for c in app.registered_commands}
 
 
 def _command_in(argv: list[str]) -> str | None:

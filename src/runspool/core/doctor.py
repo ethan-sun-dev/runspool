@@ -106,6 +106,20 @@ class DoctorService:
         checks.append(
             Check("plugins", not problems, "; ".join(problems) if problems else "all active")
         )
+        contracts = self._contracts_check()
+        if contracts is not None:
+            checks.append(contracts)
+        refused = list(getattr(self._startup, "refused_changes", []))
+        if refused:
+            checks.append(
+                Check(
+                    "plugin changes",
+                    False,
+                    f"{len(refused)} plugin change(s) refused since startup (first: "
+                    f"{refused[0]}): the plugin set is fixed once started; restart the "
+                    "runtime to apply plugin changes",
+                )
+            )
         checks.append(self._external_check())
         warnings = list(getattr(self._startup, "warnings", []))
         checks.append(
@@ -113,6 +127,18 @@ class DoctorService:
         )
         return checks
 
+
+    def _contracts_check(self) -> Check | None:
+        """Artifact contracts of every workflow. Only shown once something declares
+        one: without declarations doctor reports exactly what it did before."""
+        report = self._steps.check_contracts(self._config.workflows)
+        if report.errors:  # whatever ``declared`` says: an error is never hidden
+            return Check("artifacts", False, "; ".join(report.errors))
+        if not report.declared:
+            return None
+        if report.unverified:
+            return Check("artifacts", True, "unverified: " + "; ".join(report.unverified))
+        return Check("artifacts", True, "every declared requirement is provided")
 
     def _external_check(self) -> Check:
         """Programs active plugins declare they need (``external``, kind ``binary``)

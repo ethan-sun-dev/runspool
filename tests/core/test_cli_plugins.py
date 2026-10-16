@@ -98,3 +98,43 @@ def test_built_in_commands_still_work_when_the_profile_does_not_boot(tmp_path):
 )
 def test_config_path_is_found_before_parsing(argv, expected):
     assert str(_config_path_from(argv)) == expected
+
+
+LEGACY_ARTIFACTS = """
+import typer
+
+
+def contribute(ctx, config):
+    def artifacts(task_id: int):  # a plugin's own command, from before RunSpool had one
+        typer.echo(f"legacy artifacts of {task_id}")
+
+    ctx.cli.register(artifacts)
+
+
+contribute.inject = ["cli"]
+"""
+
+
+def test_a_plugin_command_named_artifacts_keeps_working(tmp_path, monkeypatch, capsys):
+    """`artifacts` became a built-in command after 0.2.2; a plugin that already had
+    one keeps it (the built-in yields), whether or not contracts are used."""
+    (tmp_path / "legacy_commands.py").write_text(LEGACY_ARTIFACTS, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "legacy_commands", raising=False)
+    path = tmp_path / "runspool.yaml"
+    path.write_text(
+        f"workspace_root: {tmp_path / 'ws'}\n"
+        "patch:\n  - insert: [{id: legacy, plugin: 'legacy_commands:contribute'}]\n",
+        encoding="utf-8",
+    )
+    result = invoke(path, "artifacts", "7")
+    assert result.exit_code == 0, result.output
+    assert "legacy artifacts of 7" in result.output
+    assert "clashes" not in capsys.readouterr().err
+
+
+def test_the_built_in_artifacts_command_is_there_without_such_a_plugin(tmp_path):
+    path = tmp_path / "runspool.yaml"
+    path.write_text(f"workspace_root: {tmp_path / 'ws'}\n", encoding="utf-8")
+    result = invoke(path, "artifacts", "1", "--json")
+    assert result.exit_code == 1 and '"not_found"' in result.output

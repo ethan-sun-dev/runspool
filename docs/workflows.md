@@ -191,3 +191,18 @@ built-in `archive`.
 registry and every configured step imports, and that every enabled plugin is
 active. A typo, an unregistered step, a broken import or a plugin that failed to
 load is reported before you run anything.
+
+When steps declare [artifact contracts](writing-steps.md#artifact-contracts),
+`doctor` also checks that each declared requirement is provided by an earlier
+step, and `run` / `daemon` refuse a workflow's steps (its tasks go to
+`manual_required`) until it is. Declare what the task's input itself provides
+with `inputs`; `allow_unverified` accepts a gap that only an undeclared older
+step could fill:
+
+```yaml
+workflows:
+  drafts:
+    inputs: [source:file]      # optional; only artifact contracts read it
+    allow_unverified: false    # optional (default false)
+    steps: [write, adapt, publish]
+```
