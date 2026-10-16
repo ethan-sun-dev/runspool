@@ -22,6 +22,9 @@ class TaskStatus(StrEnum):
     PARTIALLY_COMPLETED = "partially_completed"
     # A step with side effects is waiting for a human to approve or reject it.
     AWAITING_APPROVAL = "awaiting_approval"
+    # An external step (runspool.engine.external) is waiting for its work item to be
+    # submitted from outside the engine (an agent, a person).
+    AWAITING_EXTERNAL = "awaiting_external"
 
 
 # Terminal states never scheduled again.
@@ -51,6 +54,13 @@ class EventType(StrEnum):
     WOKEN = "woken"
     APPROVAL_ASKED = "approval_asked"
     APPROVAL_DECIDED = "approval_decided"
+    # External steps: a work item was opened, claimed, released, submitted, or its
+    # submission rejected by the step's validator.
+    ITEM_OPENED = "item_opened"
+    ITEM_CLAIMED = "item_claimed"
+    ITEM_RELEASED = "item_released"
+    ITEM_SUBMITTED = "item_submitted"
+    ITEM_REJECTED = "item_rejected"
 
 
 @dataclass(frozen=True)

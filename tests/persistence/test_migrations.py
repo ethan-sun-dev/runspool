@@ -96,15 +96,39 @@ def _rows(path, sql):
         return conn.execute(sql).fetchall()
 
 
-def test_a_v3_database_from_0_2_2_is_upgraded_to_v4_keeping_everything(tmp_path):
+WORK_ITEM_COLUMNS = {
+    "id",
+    "task_id",
+    "step",
+    "attempt",
+    "max_attempts",
+    "status",
+    "kind",
+    "instructions",
+    "payload_json",
+    "previous_error",
+    "claimed_by",
+    "claim_token",
+    "claimed_at",
+    "submission_json",
+    "submitted_by",
+    "submitted_at",
+    "error",
+    "step_run_id",
+    "created_at",
+    "updated_at",
+}
+
+
+def test_a_v3_database_from_0_2_2_is_upgraded_to_v5_keeping_everything(tmp_path):
     path = _v3_database(tmp_path / "v3.db")
     tables = ("tasks", "task_events", "step_runs")
     before = {t: _rows(path, f"select * from {t} order by id") for t in tables}
     columns_before = {t: columns(path, t) for t in tables}
 
-    assert SCHEMA_VERSION == 4
-    assert Database(path).init() == 4
-    assert _rows(path, "select value from schema_meta where key = 'version'") == [("4",)]
+    assert SCHEMA_VERSION == 5
+    assert Database(path).init() == 5
+    assert _rows(path, "select value from schema_meta where key = 'version'") == [("5",)]
     for t in tables:  # only a table was added: existing tables and rows are untouched
         assert columns(path, t) == columns_before[t]
         assert _rows(path, f"select * from {t} order by id") == before[t]
@@ -120,9 +144,66 @@ def test_a_v3_database_from_0_2_2_is_upgraded_to_v4_keeping_everything(tmp_path)
         "created_at",
     }
     assert _rows(path, "select count(*) from artifacts") == [(0,)]
+    assert columns(path, "work_items") == WORK_ITEM_COLUMNS
+    assert _rows(path, "select count(*) from work_items") == [(0,)]
 
     task = TaskRepository(Database(path)).get_task(1)
     assert task["name"] == "笔记 一" and task["task_status"] == "completed"
+
+
+def _v4_database(path):
+    """The database RunSpool left behind with artifact contracts (R-2, schema v4);
+    see the fixture's header."""
+    with sqlite3.connect(path) as conn:
+        conn.executescript((FIXTURES / "v4_runspool_r2.sql").read_text(encoding="utf-8"))
+    return path
+
+
+def test_a_v4_database_with_artifacts_is_upgraded_to_v5_keeping_everything(tmp_path):
+    path = _v4_database(tmp_path / "v4.db")
+    tables = ("tasks", "task_events", "step_runs", "artifacts")
+    before = {t: _rows(path, f"select * from {t} order by id") for t in tables}
+    columns_before = {t: columns(path, t) for t in tables}
+    assert _rows(path, "select value from schema_meta where key = 'version'") == [("4",)]
+
+    assert Database(path).init() == 5
+    assert _rows(path, "select value from schema_meta where key = 'version'") == [("5",)]
+    for t in tables:  # only a table was added: existing tables and rows are untouched
+        assert columns(path, t) == columns_before[t]
+        assert _rows(path, f"select * from {t} order by id") == before[t]
+    assert columns(path, "work_items") == WORK_ITEM_COLUMNS
+    assert _rows(path, "select count(*) from work_items") == [(0,)]
+
+    from runspool.persistence.artifact_log import ArtifactLog
+
+    db = Database(path)
+    (row,) = ArtifactLog(db).latest(1)
+    assert row["path"] == "ready/1/笔记 一.txt"
+    paused = TaskRepository(db).get_task(2)
+    assert paused["task_status"] == "paused"
+
+
+def test_an_upgraded_database_holds_work_items(tmp_path):
+    from runspool.persistence.work_items import WorkItems
+
+    db = Database(_v4_database(tmp_path / "v4.db"))
+    db.init()
+    items = WorkItems(db)
+    with sqlite3.connect(db.path) as conn:
+        conn.row_factory = sqlite3.Row
+        items.opener(
+            2,
+            "ingest_file",
+            attempt=1,
+            max_attempts=3,
+            kind="human",
+            instructions="检查「笔记 一」",
+            payload={"path": "ready/1/笔记 一.txt"},
+            previous_error=None,
+        )(conn)
+    (item,) = items.list_items(task_id=2)
+    assert item["status"] == "open" and item["payload"] == {"path": "ready/1/笔记 一.txt"}
+    assert item["instructions"] == "检查「笔记 一」"
 
 
 def test_the_upgraded_database_records_artifacts(tmp_path):
@@ -137,13 +218,14 @@ def test_the_upgraded_database_records_artifacts(tmp_path):
     assert (row["path"], row["sha256"]) == ("ready/1/笔记 一.md", "ab" * 32)
 
 
-def test_migration_4_can_be_applied_again_after_an_interruption(tmp_path):
+@pytest.mark.parametrize("version", [4, 5])
+def test_migrations_4_and_5_can_be_applied_again_after_an_interruption(tmp_path, version):
     from runspool.persistence.schema import MIGRATIONS
 
     db = Database(tmp_path / "t.db")
     db.init()
-    (apply_v4,) = [fn for version, fn in MIGRATIONS if version == 4]
+    (apply,) = [fn for v, fn in MIGRATIONS if v == version]
     with sqlite3.connect(db.path) as conn:
-        apply_v4(conn)  # tables and indexes already there: a no-op
-        conn.execute("update schema_meta set value = '3' where key = 'version'")
-    assert db.init() == 4
+        apply(conn)  # tables and indexes already there: a no-op
+        conn.execute("update schema_meta set value = ? where key = 'version'", (str(version - 1),))
+    assert db.init() == SCHEMA_VERSION

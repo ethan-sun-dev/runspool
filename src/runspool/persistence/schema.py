@@ -129,11 +129,51 @@ def _v4_artifacts(conn: sqlite3.Connection) -> None:
     conn.execute("create index if not exists idx_artifacts_task on artifacts(task_id)")
 
 
+def _v5_work_items(conn: sqlite3.Connection) -> None:
+    # work_items: the work an external step (runspool.engine.external) asks for, one
+    # row per attempt. status: open -> claimed -> submitted -> accepted | rejected |
+    # exhausted (rejected, no attempts left); cancelled when the task moves on
+    # without it. At most one item per task is active (open, claimed or submitted).
+    conn.execute(
+        """
+        create table if not exists work_items (
+            id integer primary key autoincrement,
+            task_id integer not null references tasks(id),
+            step text not null,
+            attempt integer not null default 1,
+            max_attempts integer not null,
+            status text not null,
+            kind text not null,
+            instructions text not null default '',
+            payload_json text,
+            previous_error text,
+            claimed_by text,
+            claim_token text,
+            claimed_at text,
+            submission_json text,
+            submitted_by text,
+            submitted_at text,
+            error text,
+            step_run_id integer references step_runs(id),
+            created_at text not null default (datetime('now')),
+            updated_at text not null default (datetime('now'))
+        )
+        """
+    )
+    conn.execute("create index if not exists idx_work_items_status on work_items(status)")
+    conn.execute("create index if not exists idx_work_items_task on work_items(task_id)")
+    conn.execute(
+        "create unique index if not exists idx_work_items_active on work_items(task_id) "
+        "where status in ('open', 'claimed', 'submitted')"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _v1_baseline),
     (2, _v2_metadata_and_parent),
     (3, _v3_approval),
     (4, _v4_artifacts),
+    (5, _v5_work_items),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
