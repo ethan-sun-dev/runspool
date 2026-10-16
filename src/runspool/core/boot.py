@@ -9,6 +9,15 @@ plugins as the ``config`` service. A profile without ``bundles`` gets the defaul
 Layer order: bundles (profile order) -> the profile's ``steps:`` map (as the
 ``config-steps`` entry, after every bundle so built-in steps register first) ->
 the profile's own patch -> command-line overlays.
+
+Artifact contracts are checked against the steps registered at startup. Once boot
+has finished, while any workflow uses artifact contracts (a step declares
+``requires`` / ``provides``, or a workflow declares ``inputs``), every change to the
+loaded plugins (reloading one with ``fiber.restart()``, loading or unloading one,
+registering or unregistering a step) is refused before it changes anything: plugin
+changes take effect when the runtime restarts. This is a deliberate boundary. A
+change refused this way is listed by doctor. Without contracts, plugins may change
+at run time as before.
 """
 
 from __future__ import annotations
@@ -74,6 +83,8 @@ class StartupInfo:
     def __init__(self, loader: Loader) -> None:
         self.loader = loader
         self.warnings: list[str] = []
+        # Plugin changes refused since startup because workflows use artifact contracts.
+        self.refused_changes: list[str] = []
 
     def report(self) -> StartupReport:
         return self.loader.report()
@@ -156,4 +167,29 @@ def boot(config_path: Path | str, *, overlays: Iterable[Path] = ()) -> Booted:
     absent = [name for name in CORE_SERVICES if kernel.root.get(name) is None]
     if absent:
         raise StartupError(f"no active plugin provides {', '.join(absent)}", report)
+    kernel.guard_changes(_contracts_guard(kernel, config, startup))
     return Booted(kernel, loader, config, profile, composition, report)
+
+
+CONTRACTS_FROZEN = (
+    "workflows use artifact contracts, which are checked against the steps registered "
+    "at startup; plugin changes take effect after the runtime restarts"
+)
+
+
+def _contracts_guard(kernel: Kernel, config: AppConfig, startup: StartupInfo):
+    """Refuse plugin changes after startup while any workflow uses artifact contracts."""
+
+    def guard(what: str) -> str | None:
+        steps = kernel.root.get("steps")
+        try:
+            declared = steps is not None and steps.check_contracts(config.workflows).declared
+        except Exception as exc:  # noqa: BLE001 - cannot tell: refuse
+            startup.refused_changes.append(what)
+            return f"cannot tell whether workflows use artifact contracts ({type(exc).__name__})"
+        if not declared:
+            return None
+        startup.refused_changes.append(what)
+        return CONTRACTS_FROZEN
+
+    return guard

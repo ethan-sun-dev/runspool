@@ -26,6 +26,7 @@ from runspool.engine.artifacts import (
 from runspool.engine.registry import StepRegistry
 from runspool.engine.runner import TaskRunner
 from runspool.engine.step import Step, StepResult
+from runspool.kernel import FiberState, PluginChangeRefused
 from runspool.models import TaskStatus
 from runspool.persistence.state_machine import StateMachine
 from runspool.runtime import run_until_idle
@@ -662,18 +663,23 @@ def test_allow_unverified_runs_a_mixed_chain_and_reports_it_once(profile, caplog
     assert "workflow 'drafts'" in notes[0] and "unverified" in notes[0]
 
 
-# -- plugins reloaded while the runtime lives (fiber.restart) -----------------------
+# -- contracts are checked against the steps registered at startup -----------------
+#
+# While workflows use artifact contracts, plugin changes after startup (reloading a
+# plugin with fiber.restart(), loading or unloading one, registering or unregistering
+# a step) are refused before anything changes; they take effect after a restart.
+# Without contracts, plugins reload at run time as before.
 
 RELOADABLE = """
 from runspool.engine.step import Step, StepResult
 
-STATE = {"provides": ["master"]}
+STATE = {"provides": PROVIDES, "declare": DECLARE, "undo": None}
 
 
 def producer(ctx, config):
     class Produce(Step):
         name = "produce"
-        provides = tuple(STATE["provides"])
+        provides = tuple(STATE["provides"]) if STATE["declare"] else None
 
         def run(self, ctx):
             return StepResult()
@@ -684,16 +690,15 @@ def producer(ctx, config):
 producer.inject = ["steps"]
 
 
-class Consume(Step):
-    name = "consume"
-    requires = ("master",)
-
-    def run(self, ctx):
-        return StepResult()
-
-
 def consumer(ctx, config):
-    ctx.steps.register(Consume())
+    class Consume(Step):
+        name = "consume"
+        requires = ("master",) if STATE["declare"] else None
+
+        def run(self, ctx):
+            return StepResult()
+
+    STATE["undo"] = ctx.steps.register(Consume())
 
 
 consumer.inject = ["steps"]
@@ -702,27 +707,38 @@ consumer.inject = ["steps"]
 
 @pytest.fixture
 def reloadable(tmp_path, monkeypatch, request):
-    module = f"reloadable_{request.node.name}"
-    (tmp_path / f"{module}.py").write_text(RELOADABLE, encoding="utf-8")
+    """``reloadable(provides, declare=True)`` boots a profile whose ``produce`` step
+    comes from a plugin that can be reloaded; returns ``(ctx, plugin module, path)``."""
+    module = f"reloadable_{request.node.name.replace('[', '_').replace(']', '_')}"
     monkeypatch.syspath_prepend(str(tmp_path))
-    path = tmp_path / "runspool.yaml"
-    path.write_text(
-        f"workspace_root: {tmp_path / '工作 区'}\n"
-        "workflows:\n  drafts:\n    steps: [produce, consume]\n"
-        "patch:\n  - insert:\n"
-        f"      - {{id: producer, plugin: '{module}:producer'}}\n"
-        f"      - {{id: consumer, plugin: '{module}:consumer'}}\n",
-        encoding="utf-8",
-    )
-    ctx = load_context(path)
-    state = __import__(module).STATE
-    fiber = next(f for f in ctx.kernel.fibers if f.name == "producer")
+    monkeypatch.delitem(sys.modules, module, raising=False)
 
-    def reload_producer(provides):
-        state["provides"] = provides
-        fiber.restart()
+    def make(provides, *, declare=True):
+        source = RELOADABLE.replace("PROVIDES", repr(list(provides)))
+        (tmp_path / f"{module}.py").write_text(
+            source.replace("DECLARE", repr(declare)), encoding="utf-8"
+        )
+        path = tmp_path / "runspool.yaml"
+        path.write_text(
+            f"workspace_root: {tmp_path / '工作 区'}\n"
+            "workflows:\n  drafts:\n    steps: [produce, consume]\n"
+            "patch:\n  - insert:\n"
+            f"      - {{id: producer, plugin: '{module}:producer'}}\n"
+            f"      - {{id: consumer, plugin: '{module}:consumer'}}\n",
+            encoding="utf-8",
+        )
+        return load_context(path), sys.modules[module], path
 
-    return ctx, reload_producer
+    return make
+
+
+def _fiber(ctx, name):
+    return next(f for f in ctx.kernel.fibers if f.name == name)
+
+
+def _registered(ctx):
+    registry = ctx.service("steps").registry
+    return {name: registry.get(name) for name in registry.names()}
 
 
 def _drive(ctx, daemon, tid):
@@ -740,38 +756,135 @@ def _new_task(ctx):
     return ctx.repo.create_task(input="in", workflow="drafts", first_step="produce", max_retries=0)
 
 
-def test_a_reload_that_breaks_the_chain_stops_new_tasks_of_a_running_daemon(reloadable):
-    ctx, reload_producer = reloadable
+def test_a_reload_is_refused_while_workflows_use_contracts(reloadable):
+    """Formerly: a reload that breaks the chain stops new tasks of a running daemon.
+    Now that reload is refused, the registry is left as it was, and the daemon goes
+    on with the steps it started with."""
+    ctx, plugin, _ = reloadable(["master"])
     daemon = ctx.service("runtime").build_daemon()
     try:
         assert _drive(ctx, daemon, _new_task(ctx)) == TaskStatus.COMPLETED
-        reload_producer([])  # the producer no longer declares the master
-        assert not _doctor(ctx).ok
-        tid = _new_task(ctx)
-        assert _drive(ctx, daemon, tid) == TaskStatus.MANUAL_REQUIRED
-        assert "'consume' requires 'master'" in ctx.repo.get_task(tid)["last_error"]
+        before = _registered(ctx)
+        plugin.STATE["provides"] = []  # the new version would no longer declare master
+        with pytest.raises(PluginChangeRefused, match="after the runtime restarts"):
+            _fiber(ctx, "producer").restart()
+        assert _registered(ctx) == before  # same names, same step objects
+        assert _fiber(ctx, "producer").state is FiberState.ACTIVE
+        assert _doctor(ctx).ok
+        assert _drive(ctx, daemon, _new_task(ctx)) == TaskStatus.COMPLETED
     finally:
         daemon.coordinator.pool.shutdown(wait=True)
 
 
-def test_a_reload_that_fixes_the_chain_lets_a_retry_run(reloadable):
-    ctx, reload_producer = reloadable
-    reload_producer([])
+def test_a_broken_chain_is_fixed_by_a_restart_not_by_a_reload(reloadable):
+    """Formerly: a reload that fixes the chain lets a retry run. Now the fixed plugin
+    takes effect only in a new runtime (a new boot, as after a restart)."""
+    ctx, plugin, path = reloadable([])
     daemon = ctx.service("runtime").build_daemon()
     try:
         tid = _new_task(ctx)
         assert _drive(ctx, daemon, tid) == TaskStatus.MANUAL_REQUIRED
-        reload_producer(["master"])
-        assert _doctor(ctx).ok
-        ctx.state_machine("drafts").retry(tid)
-        assert _drive(ctx, daemon, tid) == TaskStatus.COMPLETED
+        plugin.STATE["provides"] = ["master"]
+        with pytest.raises(PluginChangeRefused):
+            _fiber(ctx, "producer").restart()
+        assert not _doctor(ctx).ok  # still the version it started with
+    finally:
+        daemon.coordinator.pool.shutdown(wait=True)
+
+    restarted = load_context(path)  # the module keeps the fixed STATE
+    assert _doctor(restarted).ok
+    assert _doctor(restarted, "plugin changes") is None  # a new process refused nothing
+    restarted.state_machine("drafts").retry(tid)
+    daemon = restarted.service("runtime").build_daemon()
+    try:
+        assert _drive(restarted, daemon, tid) == TaskStatus.COMPLETED
     finally:
         daemon.coordinator.pool.shutdown(wait=True)
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        "reload",
+        "unload",
+        "load a plugin",
+        "provide a service",
+        "register a step",
+        "unregister a step",
+    ],
+)
+def test_every_plugin_change_is_refused_before_it_changes_anything(reloadable, change):
+    ctx, plugin, _ = reloadable(["master"])
+    before = _registered(ctx)
+    fibers = list(ctx.kernel.fibers)
+    producer = _fiber(ctx, "producer")
+
+    class Extra(_Plain):
+        name = "extra"
+        provides = ("master",)
+
+    def extra_plugin(plugin_ctx, config):
+        plugin_ctx.steps.register(Extra())
+
+    extra_plugin.inject = ["steps"]
+    act = {
+        "reload": producer.restart,
+        "unload": producer.dispose,
+        "load a plugin": lambda: ctx.kernel.root.plugin(extra_plugin, name="extra"),
+        "provide a service": lambda: producer.ctx.provide("extra", object()),
+        "register a step": lambda: producer.ctx.steps.register(Extra()),
+        "unregister a step": plugin.STATE["undo"],
+    }[change]
+    with pytest.raises(PluginChangeRefused, match="artifact contracts"):
+        act()
+    assert _registered(ctx) == before
+    assert ctx.kernel.fibers == fibers
+    assert all(f.state is FiberState.ACTIVE for f in fibers)
+    assert ctx.kernel.root.get("extra") is None
+
+
+def test_doctor_says_to_restart_after_a_refused_change(reloadable):
+    ctx, _, _ = reloadable(["master"])
+    assert _doctor(ctx, "plugin changes") is None
+    for _ in range(2):
+        with pytest.raises(PluginChangeRefused):
+            _fiber(ctx, "producer").restart()
+    checks = [c for c in ctx.service("doctor").run() if c.name == "plugin changes"]
+    assert len(checks) == 1  # reported once, however many were refused
+    assert not checks[0].ok
+    assert "2 plugin change(s) refused" in checks[0].detail
+    assert "reload plugin 'producer'" in checks[0].detail
+    assert "restart the runtime" in checks[0].detail
+
+
+def test_without_contracts_plugins_reload_as_before(reloadable):
+    ctx, _, _ = reloadable([], declare=False)
+    daemon = ctx.service("runtime").build_daemon()
+    try:
+        before = _registered(ctx)
+        _fiber(ctx, "producer").restart()
+        after = _registered(ctx)
+        assert set(after) == set(before)
+        assert after["produce"] is not before["produce"]  # really reloaded
+        assert after["consume"] is before["consume"]
+        assert _fiber(ctx, "producer").state is FiberState.ACTIVE
+        assert _drive(ctx, daemon, _new_task(ctx)) == TaskStatus.COMPLETED
+    finally:
+        daemon.coordinator.pool.shutdown(wait=True)
+    names = [c.name for c in ctx.service("doctor").run()]
+    assert "plugin changes" not in names and "artifacts" not in names
+
+
+def test_shutting_down_is_never_refused(reloadable):
+    ctx, _, _ = reloadable(["master"])
+    ctx.kernel.dispose()
+    assert ctx.kernel.fibers == []
+    assert ctx.kernel.root.get("steps") is None
+
+
 def test_the_step_about_to_run_is_checked_as_that_object():
-    """A reload between taking a step from the registry and running it must not make
-    the check judge a different version than the one that runs."""
+    """The check judges the step object that runs, not whatever is registered under
+    its name, so the two can never disagree."""
     from runspool.config import WorkflowConfig
     from runspool.core.steps import StepsService
 
@@ -797,7 +910,7 @@ def test_the_step_about_to_run_is_checked_as_that_object():
     assert service.check_contract("wf", workflow, running=Old()).ok
 
 
-# -- a reload in the middle of one check (no mixing of versions) --------------------
+# -- a reload in the middle of one check --------------------------------------------
 
 MIXED = """
 import threading
@@ -806,7 +919,7 @@ from runspool.engine.step import Step, StepResult
 
 STATE = {"version": "old"}
 # Set by the test: the first read of the old p's declaration announces itself on
-# "read" and waits for "go", so a reload can happen in the middle of one check.
+# "read" and waits for "go", so a reload can be attempted in the middle of one check.
 HOOK = {"armed": False, "read": threading.Event(), "go": threading.Event()}
 
 
@@ -871,10 +984,12 @@ consumer.inject = ["steps"]
 """
 
 
-def test_a_reload_during_a_check_cannot_combine_two_versions_into_a_pass(tmp_path, monkeypatch):
+def test_a_reload_during_a_check_is_refused_so_one_version_is_judged(tmp_path, monkeypatch):
     """Old: p provides master, q nothing (no transcript). New: p nothing, q provides
     transcript (no master). Each version alone is broken; reading old p and then
-    new q in one check would pass the workflow."""
+    new q in one check would pass the workflow. Formerly the check guarded against
+    that mix; now the reload in the middle of the check is refused, so the check
+    only ever sees the version the runtime started with."""
     module = "mixed_versions_steps"
     (tmp_path / f"{module}.py").write_text(MIXED, encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -890,7 +1005,7 @@ def test_a_reload_during_a_check_cannot_combine_two_versions_into_a_pass(tmp_pat
     )
     ctx = load_context(path)
     plugin = sys.modules[module]
-    fiber = next(f for f in ctx.kernel.fibers if f.name == "producers")
+    before = _registered(ctx)
     daemon = ctx.service("runtime").build_daemon()
     try:
         tid = ctx.repo.create_task(input="in", workflow="drafts", first_step="start", max_retries=0)
@@ -899,8 +1014,9 @@ def test_a_reload_during_a_check_cannot_combine_two_versions_into_a_pass(tmp_pat
         daemon.run_once()  # the worker starts checking "start" and stops inside old p
         assert plugin.HOOK["read"].wait(10)
         plugin.STATE["version"] = "new"
-        fiber.restart()  # the reload lands in the middle of that check
-        assert not _doctor(ctx).ok  # so is the new one
+        with pytest.raises(PluginChangeRefused):
+            _fiber(ctx, "producers").restart()  # attempted in the middle of that check
+        assert _registered(ctx) == before
         plugin.HOOK["go"].set()
         daemon.coordinator.pool.drain()
     finally:
@@ -909,44 +1025,5 @@ def test_a_reload_during_a_check_cannot_combine_two_versions_into_a_pass(tmp_pat
     task = ctx.repo.get_task(tid)
     assert ctx.step_runs.list_for_task(tid) == []  # "start" never ran
     assert task["step"] == "start"
-    assert task["task_status"] in (TaskStatus.MANUAL_REQUIRED, TaskStatus.QUEUED)
-
-
-def test_steps_that_keep_changing_give_no_verdict():
-    """If every snapshot is overtaken by a registration, the check does not guess:
-    it raises StepsChanging (the gate defers the step, doctor says to retry)."""
-    from runspool.config import WorkflowConfig
-    from runspool.core.doctor import DoctorService
-    from runspool.core.steps import StepsChanging, StepsService
-
-    service = StepsService()
-    churn = iter(range(1000))
-
-    class _Churning:
-        def __get__(self, obj, owner):
-            service.registry.register(_named(f"churn_{next(churn)}"))  # a reload, every time
-            return ("master",)
-
-    class Producer(_Plain):
-        name = "producer"
-        provides = _Churning()
-
-    class Consume(_Plain):
-        name = "consume"
-        requires = ("master",)
-
-    service.registry.register(Producer())
-    service.registry.register(Consume())
-    workflow = WorkflowConfig(steps=["producer", "consume"])
-    with pytest.raises(StepsChanging):
-        service.check_contract("wf", workflow)
-
-    class Config:
-        workflows = {"wf": workflow}
-
-    check = DoctorService(Config(), None, service, None)._contracts_check()
-    assert not check.ok and "run doctor again" in check.detail
-
-
-def _named(name):
-    return type(name, (_Plain,), {"name": name})()
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert "'consume' requires 'transcript'" in task["last_error"]

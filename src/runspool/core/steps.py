@@ -8,6 +8,10 @@ registering plugin, leaving the first registration in place.
 use, so commands that only read task state never import step code. ``resolve_all``
 imports every lazy step and reports the ones that fail; ``run``, ``daemon`` and
 ``doctor`` call it before relying on the registry.
+
+Once the application has started, registering or unregistering a step is a change
+to the loaded plugins and goes through the kernel's change guard: while workflows
+use artifact contracts, it is refused (see ``runspool.core.boot``).
 """
 
 from __future__ import annotations
@@ -27,13 +31,6 @@ from runspool.engine.registry import StepRegistry
 from runspool.engine.step import Step, StepContext, StepResult
 from runspool.kernel import Plugin
 from runspool.registry_builder import StepLoadError
-
-# How many times a contract check starts over when the steps change under it.
-_CONSISTENT_ATTEMPTS = 5
-
-
-class StepsChanging(RuntimeError):
-    """The registered steps kept changing (plugins reloading) during a check."""
 
 
 class LazyStep(Step):
@@ -131,9 +128,9 @@ class StepsService:
             ) from None
 
     def check_contracts(self, workflows: Mapping[str, Any]) -> ChainReport:
-        """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``),
-        all against one consistent set of steps (see :meth:`_consistently`)."""
-        return self._consistently(lambda lookup: check_workflows(workflows, lookup))
+        """Check the artifact contracts of ``workflows`` (``{name: WorkflowConfig}``)
+        against the registered steps."""
+        return check_workflows(workflows, self.contract_for)
 
     def check_contract(
         self, name: str, workflow: Any, *, running: Step | None = None
@@ -141,33 +138,15 @@ class StepsService:
         """Check the artifact contracts of one workflow (a ``WorkflowConfig``).
 
         ``running``: the step object about to run, used for its own name instead of
-        the registered one, so the check judges what runs. The other steps come from
-        one consistent snapshot of the registry (see :meth:`_consistently`)."""
-        return self._consistently(
-            lambda lookup: check_workflow(name, workflow, lookup), running=running
-        )
+        the registered one, so the check judges what runs. The other steps are the
+        registered ones."""
 
-    def _consistently(
-        self, check: Callable[[Callable[[str], Contract | None]], ChainReport], *, running=None
-    ) -> ChainReport:
-        """Run ``check`` against a snapshot of the registry, and keep its result only
-        if no step was registered or unregistered meanwhile (a plugin reloading):
-        otherwise check again on a new snapshot. One check never mixes steps from
-        before and after a reload. Raises :class:`StepsChanging` if the steps keep
-        changing."""
-        for _ in range(_CONSISTENT_ATTEMPTS):
-            generation, steps = self.registry.snapshot()
+        def lookup(step_name: str) -> Contract | None:
+            if running is not None and step_name == running.name:
+                return self._contract_of(step_name, running)
+            return self.contract_for(step_name)
 
-            def lookup(step_name: str, steps: dict[str, Step] = steps) -> Contract | None:
-                if running is not None and step_name == running.name:
-                    return self._contract_of(step_name, running)
-                step = steps.get(step_name)
-                return None if step is None else self._contract_of(step_name, step)
-
-            report = check(lookup)
-            if self.registry.generation == generation:
-                return report
-        raise StepsChanging("the registered steps kept changing while being checked")
+        return check_workflow(name, workflow, lookup)
 
     def resolve_all(self) -> list[tuple[str, Exception]]:
         """Import every lazy step; return ``(name, error)`` for those that fail."""
@@ -238,6 +217,7 @@ class _BoundSteps:
             raise TypeError(f"{instance!r} is not a runspool Step")
         registry = self._service.registry
         side_effects = self._service._side_effects
+        self._ctx.check_change(f"register step {instance.name!r}")
 
         def register() -> Callable[[], None]:
             registry.register(instance)
@@ -250,7 +230,13 @@ class _BoundSteps:
 
             return unregister
 
-        return self._ctx.effect(register, label=f"step:{instance.name}")
+        effect = self._ctx.effect(register, label=f"step:{instance.name}")
+
+        def undo() -> None:
+            self._ctx.check_change(f"unregister step {instance.name!r}")
+            effect()
+
+        return undo
 
 
 plugin = Plugin(name="steps", apply=lambda ctx, config: ctx.provide("steps", StepsService()))

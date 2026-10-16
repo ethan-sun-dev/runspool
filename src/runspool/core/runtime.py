@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from runspool.config import AppConfig
-from runspool.core.steps import StepsChanging
 from runspool.core.store import Store
 from runspool.daemon import Daemon, read_pid
 from runspool.engine.coordinator import Coordinator
@@ -53,11 +52,7 @@ class Gate:
 
     def __call__(self, request: GateRequest) -> Decision:
         if self._contracts is not None:
-            try:
-                problem = self._contracts.problem(request.task["workflow"], request.step)
-            except StepsChanging:
-                # Plugins are reloading right now: judge the step on the next round.
-                return Defer("steps are being reloaded; artifact contracts are checked again")
+            problem = self._contracts.problem(request.task["workflow"], request.step)
             if problem:
                 return Deny(problem)
         try:
@@ -104,19 +99,18 @@ class WorkflowContracts:
     started are checked too). Doctor checks every workflow; this only the ones
     that have work.
 
-    Nothing is cached: plugins can be reloaded while the runtime lives
-    (``fiber.restart()``), which changes the registered steps, so every check reads
-    the registry as it is then, from one consistent snapshot (a check that a reload
-    overlaps starts over; see ``StepsService.check_contract``). The step about to
-    run is checked as the object that will run, not as whatever is registered
-    under its name by then.
+    The registry is the one the runtime started with: while workflows use artifact
+    contracts, plugin changes (``fiber.restart()`` and the like) are refused until
+    the runtime restarts (see ``runspool.core.boot``). The step about to run is
+    checked as the object that will run, not as whatever is registered under its
+    name by then.
     """
 
     def __init__(self, steps: Any, config: AppConfig) -> None:
         self._steps = steps
         self._config = config
-        # Unverified gaps already warned about, per workflow: warn again only when
-        # they change (after a reload), not on every step.
+        # Unverified gaps already warned about, per workflow: warn once, not on
+        # every step.
         self._warned: dict[str, tuple[str, ...]] = {}
         self._lock = threading.Lock()
 
