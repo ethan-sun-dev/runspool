@@ -8,12 +8,14 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 from runspool.clock import utcnow_text
 from runspool.engine.artifacts import contract_of, prepare_artifacts
+from runspool.engine.children import SpawnPlan, plan_children
 from runspool.engine.external import Submission, SubmissionRejected, is_external
 from runspool.engine.gate import Allow, Ask, Decision, Defer, Deny, GateRequest
 from runspool.engine.registry import StepRegistry
@@ -166,6 +168,7 @@ class TaskRunner:
         self.repo.update_fields(task_id, {"progress": None}, token=claim_token)
         run_id = self.step_runs.start(task_id, task["step"])
         t0 = time.monotonic()
+        spawn: SpawnPlan | None = None
         # Both the step run and persisting its updates are covered by failure
         # handling: any exception marks the step failed, so a step_run never hangs
         # in "running" and a task never gets stuck in "running".
@@ -183,6 +186,14 @@ class TaskRunner:
             finally:
                 stop_beat.set()
                 beat.join()
+            # Children are checked before anything of the result is written: a spawn
+            # that does not validate fails the step, and nothing is created.
+            if result.spawn:
+                if getattr(self.repo, "spawner", None) is None:
+                    raise RuntimeError("the active store cannot spawn child tasks")
+                spawn = SpawnPlan(
+                    plan_children(result.spawn, self.config), step=task["step"], step_run_id=run_id
+                )
             if result.artifacts:
                 self._record_artifacts(task, step, run_id, result.artifacts)
             if result.updates:
@@ -234,8 +245,16 @@ class TaskRunner:
             if item is None
             else Succeeded(result.degraded, item_id=item["id"], step_run_id=run_id)
         )
+        if spawn is not None:
+            outcome = replace(outcome, step_run_id=run_id, spawn=spawn)
         after = sm.finish_step(task_id, outcome, token=claim_token)
         self._report_success(task, after, result)
+        if spawn is not None and (spawn.created or spawn.existing):
+            self._notify(
+                after or task,
+                f"step {task['step']} spawned {len(spawn.created)} child task(s)"
+                + (f" ({len(spawn.existing)} already spawned)" if spawn.existing else ""),
+            )
 
     def _fail(
         self,

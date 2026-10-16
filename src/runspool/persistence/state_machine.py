@@ -16,6 +16,11 @@ manual_required once retries are exhausted)::
     failed / manual_required --retry--> queued
     queued (deferred, waiting) --wake--> queued (runnable now)
 
+A successful step may spawn child tasks (runspool.engine.children): they are created
+in the same transaction as its transition (not when that transition terminates the
+task), so a crash never leaves the parent advanced without them, or them without
+the parent advanced.
+
 External steps (runspool.engine.external)::
 
     running --(work item opened)--> awaiting_external --submit--> queued
@@ -70,11 +75,13 @@ _UNREAD = object()
 class Succeeded:
     """The step returned. ``degraded``: it ran but did not fully do its job.
     ``item_id``: an external step's submission was accepted (that work item, checked
-    by step run ``step_run_id``)."""
+    by step run ``step_run_id``). ``spawn``: the child tasks to create with the
+    transition (a SpawnPlan, see runspool.engine.children)."""
 
     degraded: bool = False
     item_id: int | None = None
     step_run_id: int | None = None
+    spawn: Any = None
 
 
 @dataclass(frozen=True)
@@ -301,7 +308,10 @@ class StateMachine:
                 expect=(task["task_status"],),
                 require=require,
                 events=events,
-                also=self._item_change(task, outcome, fields),
+                also=chain(
+                    self._item_change(task, outcome, fields),
+                    self._spawn_change(task, outcome, fields),
+                ),
             ):
                 return self.repo.get_task(task_id)
         return self.repo.get_task(task_id)
@@ -335,6 +345,20 @@ class StateMachine:
                 step_run_id=outcome.step_run_id,
             )
         return None
+
+    def _spawn_change(
+        self, task: dict[str, Any], outcome: Outcome, fields: dict[str, Any]
+    ) -> Callable[[Any], None] | None:
+        """Create a successful step's children with its transition; not when the
+        boundary terminates the task instead."""
+        if not isinstance(outcome, Succeeded) or outcome.spawn is None:
+            return None
+        if not outcome.spawn.children or fields.get("task_status") == TaskStatus.TERMINATED:
+            return None
+        spawner = getattr(self.repo, "spawner", None)
+        if spawner is None:
+            raise RuntimeError("the active store cannot spawn child tasks")
+        return spawner(task["id"], outcome.spawn)
 
     def _items(self) -> Any:
         if self.items is None:

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from runspool.engine.artifacts import Artifact
+    from runspool.engine.children import ChildTask
 
 
 @dataclass
@@ -54,12 +55,17 @@ class StepResult:
     :class:`~runspool.engine.artifacts.Artifact` values (type, path, optional
     sha256); see :mod:`runspool.engine.artifacts`. An artifact that fails
     validation fails the step, and none of its artifacts are recorded.
+
+    ``spawn`` lists child tasks to create, as
+    :class:`~runspool.engine.children.ChildTask` values; they are created in the
+    same transaction that advances this task (see :mod:`runspool.engine.children`).
     """
 
     message: str = ""
     updates: dict[str, Any] = field(default_factory=dict)
     degraded: bool = False
     artifacts: Sequence[Artifact] = ()
+    spawn: Sequence[ChildTask] = ()
 
 
 class Step(ABC):
