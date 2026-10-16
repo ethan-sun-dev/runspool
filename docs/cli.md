@@ -135,6 +135,22 @@ runspool logs 1 --json
 
 - `--limit N` — most recent N events (default 20).
 
+### `runspool events --since <cursor>`
+
+Events of every task with an id above `cursor`, oldest first, to follow
+progress from another process (see
+[agent-json-output.md](agent-json-output.md)).
+
+```bash
+runspool events --since 0 --json            # {"events": [...], "cursor": M}
+runspool events --since 42 --task 1 --limit 100 --json
+```
+
+`cursor` in the output is the last id returned, or the given one when nothing
+is new: pass it as `--since` next time. If a plugin registers its own `events`
+command, the plugin's command is used instead: plugins could register that
+name before RunSpool had this command.
+
 ### `runspool artifacts <id>`
 
 The artifacts a task's steps recorded (see
@@ -267,6 +283,9 @@ runspool plugins --installed --json   # {"plugins": [{id, plugin, state, error, 
                                       #   distribution, version}]}
 ```
 
+If a plugin registers its own `plugins` command, the plugin's command is used
+instead: plugins could register that name before RunSpool had this command.
+
 ## Plugin commands
 
 Plugins can contribute commands or command groups. They appear in
@@ -281,7 +300,11 @@ runspool -c runspool.yaml wechat preview post/wechat.md
 ```
 
 - A plugin command cannot replace a built-in one; a clash is reported as a
-  warning and the plugin's command is ignored.
+  warning and the plugin's command is ignored. The exception is the built-in
+  commands added in 0.3.0, `artifacts`, `items`, `events` and `plugins`:
+  plugins could register these names before RunSpool had them, so a plugin's
+  command with one of these names is used instead, and `--help` lists it with
+  the plugin's help.
 - If the profile itself does not load (malformed, a `required` plugin failed, a
   core entry disabled), the built-in commands are still offered and report the
   error; invoking a plugin command prints why it is unavailable.

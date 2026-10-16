@@ -264,7 +264,10 @@ plugin's `ctx`, so it uses the plugin's services directly. The WeChat plugin
 registers a `wechat` group with `token` and `preview` commands.
 
 A plugin command cannot shadow a built-in one (`run`, `status`, `approve`, ...):
-it is ignored with a warning. Two plugins registering the same name fail the
+it is ignored with a warning. The exception is the built-in commands added in
+0.3.0, `artifacts`, `items`, `events` and `plugins`, which plugins could
+register before RunSpool had them: a plugin's command with one of these names
+is used instead of the built-in. Two plugins registering the same name fail the
 second plugin.
 
 ## Doctor checks

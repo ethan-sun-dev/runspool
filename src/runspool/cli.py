@@ -809,7 +809,7 @@ def _config_path_from(argv: list[str]) -> Path:
 # Built-in commands added after plugins could already register commands of their
 # own. A plugin command of the same name predates them, so it wins: the built-in
 # yields instead of breaking that plugin.
-_YIELDING_BUILTINS = frozenset({"artifacts", "items"})
+_YIELDING_BUILTINS = frozenset({"artifacts", "items", "events", "plugins"})
 
 
 def build_app(config_path: Path | str) -> typer.Typer:
@@ -865,12 +865,11 @@ def main() -> None:
     import sys
 
     argv = sys.argv[1:]
-    if _asks_for_version(argv):
+    version = _version_answer(argv)
+    if version is not None:
         # Before the profile boots: booting opens (and may migrate, irreversibly)
         # the database, creates the workspace and applies plugins.
-        from runspool import __version__
-
-        typer.echo(f"runspool {__version__}")
+        sys.stdout.write(version)
         raise SystemExit(0)
     cli = build_app(_config_path_from(argv))
     failed = _STATE.get("boot_error")
@@ -901,21 +900,55 @@ def _builtin_names() -> set[str]:
     return commands_ | {g.name for g in app.registered_groups if g.name}
 
 
-def _asks_for_version(argv: list[str]) -> bool:
-    """``--version`` among the global options (those before the command)."""
-    skip = False
-    for arg in argv:
-        if skip:
-            skip = False
-            continue
-        if arg in ("-c", "--config-path"):
-            skip = True
-            continue
-        if arg == "--version":
-            return True
-        if not arg.startswith("-"):
-            return False  # the command: what follows is its own
-    return False
+def _version_answer(argv: list[str]) -> str | None:
+    """What ``--version`` prints, if the global options make Typer answer with it.
+
+    The built-in app parses the global options as the full one would (the same
+    root options, eager ones in the order given, the same syntax checks), without
+    booting the profile or running a command, and with its output held back. Only
+    if ``--version`` is what it answers with is that answer given; otherwise
+    (``--help`` first, a bad option, ``--version`` after the command, another
+    option with a callback such as ``--show-completion``) ``None``, and the full
+    CLI parses the arguments, exactly as without ``--version``.
+
+    Only the version's callback runs here. Every other option's callback (the
+    completion options print a script or install one, then exit) is replaced on
+    this throwaway command by one that hands over to the full CLI as soon as the
+    option is given, so it runs once, there, and never here."""
+    if "--version" not in argv:
+        return None
+    import contextlib
+    import io
+
+    from runspool import __version__
+
+    command = typer.main.get_command(app)  # built afresh: changing it changes nothing else
+    for param in command.params:
+        if param.callback is not None and "--version" not in param.opts:
+            param.callback = _hand_over
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            command.make_context("runspool", list(argv))
+    except _HandOver:
+        return None
+    except Exception as exc:  # noqa: BLE001 - an eager option's exit, or a usage error
+        # Click's Exit (from Typer's own copy of Click in recent versions, so not
+        # imported here) carries exit_code; a usage error is reported by the full CLI.
+        answer = out.getvalue()
+        if getattr(exc, "exit_code", None) == 0 and answer == f"runspool {__version__}\n":
+            return answer
+    return None
+
+
+class _HandOver(Exception):
+    """Raised by the early parse when an option other than --version is given."""
+
+
+def _hand_over(ctx: Any, param: Any, value: Any) -> Any:
+    if value:  # given: what it does is the full CLI's to do
+        raise _HandOver(param.name)
+    return value
 
 
 def _command_in(argv: list[str]) -> str | None:

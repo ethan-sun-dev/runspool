@@ -4,6 +4,7 @@ import json
 import signal
 import time
 
+import pytest
 from typer.testing import CliRunner
 
 from runspool.cli import app
@@ -559,3 +560,131 @@ def test_version_never_boots_the_profile_or_touches_the_database(tmp_path):
     assert version == ("3",)
     assert not (tmp_path / "新 工作区").exists()
     assert not (tmp_path / "applied.marker").exists()
+
+
+def _console(tmp_path, *args):
+    """``runspool <args>`` through the console entry point, in ``tmp_path``."""
+    import os
+    import subprocess
+    import sys
+
+    main = "import sys; from runspool.cli import main; sys.argv[0] = 'runspool'; main()"
+    env = {**os.environ, "COLUMNS": "100", "TERM": "dumb"}
+    return subprocess.run(
+        [sys.executable, "-c", main, *args],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        check=False,
+    )
+
+
+def test_version_combined_with_other_global_options_parses_as_without_it(tmp_path):
+    """``--version`` answers early only when Typer would answer with it: an eager
+    ``--help`` before it still wins, and a bad option is still a usage error."""
+    import runspool
+
+    version = f"runspool {runspool.__version__}\n"
+    (tmp_path / "config.yaml").write_text("workspace_root: ./ws\n", encoding="utf-8")
+
+    def outcome(*args):
+        done = _console(tmp_path, *args)
+        return done.returncode, done.stdout, done.stderr
+
+    help_alone = outcome("--help")
+    assert help_alone[0] == 0 and "Usage:" in help_alone[1]
+    assert outcome("--help", "--version") == help_alone
+    invalid_alone = outcome("--definitely-invalid")
+    assert invalid_alone[0] == 2 and "--definitely-invalid" in invalid_alone[2]
+    assert outcome("--definitely-invalid", "--version") == invalid_alone
+    assert outcome("--version", "--help") == (0, version, "")
+    assert outcome("--version") == (0, version, "")
+    assert outcome("-c", "config.yaml", "--version") == (0, version, "")
+    assert outcome("--config-path=config.yaml", "--version") == (0, version, "")
+    after_command = outcome("status", "--version")  # the command's option, not global
+    assert after_command[0] == 2 and "No such option" in after_command[2]
+
+
+# The completion options (--show-completion, --install-completion) take a shell
+# name instead of detecting one (detection may need `ps`) with this set.
+FIXED_SHELL = {"_TYPER_COMPLETE_TEST_DISABLE_SHELL_DETECTION": "1"}
+
+
+def test_completion_output_is_the_same_with_a_command_version_option(tmp_path, monkeypatch):
+    """``--version`` after the command is the command's: the early parse of the
+    global options must leave ``--show-completion`` to the full CLI."""
+    for name, value in FIXED_SHELL.items():
+        monkeypatch.setenv(name, value)
+    (tmp_path / "config.yaml").write_text("workspace_root: ./ws\n", encoding="utf-8")
+    alone = _console(tmp_path, "--show-completion", "bash", "status")
+    assert alone.returncode == 0 and "complete" in alone.stdout and alone.stderr == ""
+    combined = _console(tmp_path, "--show-completion", "bash", "status", "--version")
+    assert (combined.returncode, combined.stdout, combined.stderr) == (
+        alone.returncode,
+        alone.stdout,
+        alone.stderr,
+    )
+
+
+def _count_completion_callbacks(monkeypatch):
+    """Count each completion callback that really runs, in every command built."""
+    import typer.main
+
+    calls: list[str] = []
+    real_get_command = typer.main.get_command
+
+    def counting(typer_instance):
+        command = real_get_command(typer_instance)
+        for param in command.params:
+            if {"--show-completion", "--install-completion"} & set(param.opts):
+
+                def wrapped(ctx, param, value, _callback=param.callback):
+                    if value:
+                        calls.append(param.opts[0])
+                    return _callback(ctx, param, value)
+
+                param.callback = wrapped
+        return command
+
+    monkeypatch.setattr(typer.main, "get_command", counting)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        (["--show-completion", "bash", "status", "--version"], ["--show-completion"]),
+        (["--install-completion", "bash", "status", "--version"], ["--install-completion"]),
+        (["--show-completion", "bash", "--version"], []),  # eager --version first
+        (["--install-completion", "bash", "--version"], []),
+    ],
+)
+def test_completion_callbacks_run_once_and_never_in_the_early_parse(
+    tmp_path, monkeypatch, capsys, args, expected
+):
+    import sys
+
+    import runspool
+    from runspool.cli import main
+
+    for name, value in FIXED_SHELL.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # where an install writes
+    (tmp_path / "home").mkdir()
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").write_text("workspace_root: ./ws\n", encoding="utf-8")
+    calls = _count_completion_callbacks(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["runspool", *args])
+    with pytest.raises(SystemExit) as done:
+        main()
+    assert done.value.code in (0, None)
+    assert calls == expected
+    out = capsys.readouterr().out
+    if not expected:  # the version answers, and nothing else runs
+        assert out == f"runspool {runspool.__version__}\n"
+        assert list((tmp_path / "home").iterdir()) == []
+    elif expected == ["--install-completion"]:
+        assert "completion installed" in out
+    else:
+        assert "complete" in out

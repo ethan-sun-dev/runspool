@@ -188,11 +188,14 @@ Upgrading from 0.2.x: read "Breaking" below and
   `artifacts` check fails. Malformed declarations are errors, never "declares
   nothing". A step that declares `provides` may only record artifacts of those
   types: anything else fails the step.
-- **Built-in commands added and how they yield.** New built-in commands
-  `artifacts`, `items`, `events` and `plugins`. A plugin command named
-  `artifacts` or `items` replaces the built-in one, as before 0.3.0. A plugin
-  command named `events` or `plugins` now clashes with a built-in and is
-  ignored with a warning (the rule for every other built-in name).
+- **New built-in commands, which yield to a plugin's.** New built-in commands
+  `artifacts`, `items`, `events` and `plugins`. A plugin could register any of
+  these names before 0.3.0, so a plugin command with one of them is used
+  instead of the built-in one, which that profile then does not offer under
+  its name (`--help` lists the plugin's command, with the plugin's help). In
+  such a profile, scripts that expect the built-in command get the plugin's.
+  Other built-in names are unchanged: a plugin command named like one of them
+  is ignored with a warning.
 - **A new task status, `awaiting_external`** (only reached by workflows with
   an external step), offering `items` and `terminate`, and new event types:
   `item_opened`, `item_claimed`, `item_released`, `item_submitted`,
