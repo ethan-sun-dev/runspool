@@ -81,6 +81,9 @@ class Step(ABC):
     # See runspool.engine.artifacts.
     requires: Sequence[str] | None = None
     provides: Sequence[str] | None = None
+    # True for a step done outside the engine (an agent, a person): subclass
+    # runspool.engine.external.ExternalStep instead of setting this yourself.
+    external: bool = False
 
     def when(self, task: dict[str, Any], config: Any) -> bool:
         return True

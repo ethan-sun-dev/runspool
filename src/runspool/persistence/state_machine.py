@@ -16,6 +16,18 @@ manual_required once retries are exhausted)::
     failed / manual_required --retry--> queued
     queued (deferred, waiting) --wake--> queued (runnable now)
 
+External steps (runspool.engine.external)::
+
+    running --(work item opened)--> awaiting_external --submit--> queued
+    running --(submission accepted)--> queued (next step) | completed | ...
+    running --(submission rejected)--> queued (a new item for the next attempt)
+                                   \\--> manual_required (no attempts left)
+
+A work item changes in the same transaction as the task transition that goes with
+it. A transition into a terminal state (completed, partially_completed, terminated:
+e.g. a last external step skipped by its ``when``), or to another step, cancels the
+task's remaining active items; an accepted item is closed first.
+
 Every write is a compare-and-set through ``TaskRepository.transition``: it applies
 only if the task is still in the state this machine read, and it records the
 transition's events in the same transaction. A concurrent change makes the write a
@@ -30,7 +42,8 @@ given the claim token, a stale worker whose claim was reclaimed changes nothing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from runspool.clock import utcnow_plus_text, utcnow_text
@@ -39,6 +52,7 @@ from runspool.models import TERMINAL_STATUSES, EventType, TaskStatus, WorkflowDe
 from runspool.persistence.event_log import Event, EventLog
 from runspool.persistence.repository import TaskRepository
 from runspool.persistence.step_run_log import StepRunLog
+from runspool.persistence.work_items import chain
 
 _UNLOCK: dict[str, Any] = {
     "locked_by": None,
@@ -54,9 +68,13 @@ _UNREAD = object()
 
 @dataclass(frozen=True)
 class Succeeded:
-    """The step returned. ``degraded``: it ran but did not fully do its job."""
+    """The step returned. ``degraded``: it ran but did not fully do its job.
+    ``item_id``: an external step's submission was accepted (that work item, checked
+    by step run ``step_run_id``)."""
 
     degraded: bool = False
+    item_id: int | None = None
+    step_run_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -90,7 +108,38 @@ class NeedsApproval:
     attempt: int
 
 
-Outcome = Succeeded | Deferred | Failed | Denied | NeedsApproval
+@dataclass(frozen=True)
+class AwaitsExternal:
+    """An external step opens a work item (attempt ``attempt`` of ``max_attempts``)
+    and the task waits for it. ``reuse``: the task's active item is waited on again
+    instead of opening one."""
+
+    attempt: int
+    max_attempts: int
+    kind: str = "external"
+    instructions: str = ""
+    payload: Mapping[str, Any] = field(default_factory=dict)
+    previous_error: str | None = None
+    reuse: bool = False
+
+
+@dataclass(frozen=True)
+class Rejected:
+    """An external step's validator rejected work item ``item_id`` (attempt
+    ``attempt`` of ``max_attempts``); checked by step run ``step_run_id``."""
+
+    reason: str
+    item_id: int
+    attempt: int
+    max_attempts: int
+    step_run_id: int | None = None
+
+    @property
+    def exhausted(self) -> bool:
+        return self.attempt >= self.max_attempts
+
+
+Outcome = Succeeded | Deferred | Failed | Denied | NeedsApproval | AwaitsExternal | Rejected
 
 
 class IllegalTransition(Exception):
@@ -117,6 +166,7 @@ class StateMachine:
         *,
         workflow: WorkflowDef,
         step_runs: StepRunLog | None = None,
+        items: Any = None,
     ) -> None:
         self.repo = repo
         self.log = log
@@ -125,6 +175,9 @@ class StateMachine:
         # still-"running" step_run row, and the end of a workflow can tell whether
         # any step ran degraded.
         self.step_runs = step_runs
+        # Optional: the work items of external steps (a WorkItems). Without it the
+        # machine cannot open or close items, and an external step fails.
+        self.items = items
 
     # -- helpers ------------------------------------------------------------------
 
@@ -136,9 +189,23 @@ class StateMachine:
         expect: tuple[TaskStatus, ...],
         require: dict[str, Any] | None = None,
         events: tuple[Event, ...] | list[Event] = (),
+        also: Callable[[Any], None] | None = None,
     ) -> bool:
+        if self.items is not None:
+            # A task that finishes (in any terminal state), or moves to another step,
+            # leaves its active work items behind: cancel them in the same
+            # transaction, after the transition's own item change (an accepted item
+            # is closed as accepted first).
+            if fields.get("task_status") in TERMINAL_STATUSES:
+                also = chain(also, self.items.canceller(task_id))
+            elif "step" in fields:
+                also = chain(also, self.items.canceller(task_id, keep_step=fields["step"]))
+        if also is None:  # the call the store contract knows
+            return self.repo.transition(
+                task_id, fields, expect=expect, require=require, events=events
+            )
         return self.repo.transition(
-            task_id, fields, expect=expect, require=require, events=events
+            task_id, fields, expect=expect, require=require, events=events, also=also
         )
 
     def _task_or_missing(self, task_id: int) -> dict:
@@ -160,8 +227,12 @@ class StateMachine:
         """Apply a user action as a compare-and-set, re-deciding on contention."""
         for _ in range(_ATTEMPTS):
             task = self._task_or_missing(task_id)
-            fields, events = decide(task)  # raises IllegalTransition when not allowed
-            if self._move(task_id, fields, expect=(task["task_status"],), events=events):
+            decided = decide(task)  # raises IllegalTransition when not allowed
+            fields, events = decided[0], decided[1]
+            also = decided[2] if len(decided) > 2 else None
+            if self._move(
+                task_id, fields, expect=(task["task_status"],), events=events, also=also
+            ):
                 return
         raise RuntimeError(f"task {task_id} kept changing; action not applied")
 
@@ -225,10 +296,50 @@ class StateMachine:
                 pause=bool(task["pause_requested"]),
             )
             if self._move(
-                task_id, fields, expect=(task["task_status"],), require=require, events=events
+                task_id,
+                fields,
+                expect=(task["task_status"],),
+                require=require,
+                events=events,
+                also=self._item_change(task, outcome, fields),
             ):
                 return self.repo.get_task(task_id)
         return self.repo.get_task(task_id)
+
+    def _item_change(
+        self, task: dict[str, Any], outcome: Outcome, fields: dict[str, Any]
+    ) -> Callable[[Any], None] | None:
+        """The work-item change that goes with a boundary transition, if any."""
+        if isinstance(outcome, AwaitsExternal):
+            if outcome.reuse or fields.get("task_status") != TaskStatus.AWAITING_EXTERNAL:
+                return None  # paused or terminated before the item was opened
+            return self._items().opener(
+                task["id"],
+                task["step"],
+                attempt=outcome.attempt,
+                max_attempts=outcome.max_attempts,
+                kind=outcome.kind,
+                instructions=outcome.instructions,
+                payload=outcome.payload,
+                previous_error=outcome.previous_error,
+            )
+        if isinstance(outcome, Succeeded) and outcome.item_id is not None:
+            return self._items().closer(
+                outcome.item_id, status="accepted", step_run_id=outcome.step_run_id
+            )
+        if isinstance(outcome, Rejected):
+            return self._items().closer(
+                outcome.item_id,
+                status="exhausted" if outcome.exhausted else "rejected",
+                error=outcome.reason,
+                step_run_id=outcome.step_run_id,
+            )
+        return None
+
+    def _items(self) -> Any:
+        if self.items is None:
+            raise RuntimeError("the active store has no work items (external steps)")
+        return self.items
 
     def _boundary(
         self, task: dict[str, Any], outcome: Outcome, *, terminate: bool, pause: bool
@@ -309,6 +420,56 @@ class StateMachine:
                     )
                 ],
             )
+
+        if isinstance(outcome, AwaitsExternal):
+            if pause:
+                # Nothing opened yet: pause in place; the item is opened on resume.
+                return (
+                    {"task_status": TaskStatus.PAUSED, "pause_requested": 0, **_UNLOCK},
+                    [Event(EventType.PAUSED, step=step)],
+                )
+            return (
+                {"task_status": TaskStatus.AWAITING_EXTERNAL, "next_retry_at": None, **_UNLOCK},
+                [
+                    Event(
+                        EventType.ITEM_OPENED,
+                        step=step,
+                        message=f"waiting for external work (attempt {outcome.attempt} of "
+                        f"{outcome.max_attempts})",
+                        payload={"attempt": outcome.attempt, "reused": outcome.reuse},
+                    )
+                ],
+            )
+
+        if isinstance(outcome, Rejected):
+            rejected = Event(
+                EventType.ITEM_REJECTED,
+                step=step,
+                message=outcome.reason,
+                payload={"item_id": outcome.item_id, "attempt": outcome.attempt},
+            )
+            if outcome.exhausted:
+                error = (
+                    f"external work rejected {outcome.attempt} time(s), no attempts left: "
+                    f"{outcome.reason}"
+                )
+                return (
+                    {
+                        "task_status": TaskStatus.MANUAL_REQUIRED,
+                        "last_error": error,
+                        "next_retry_at": None,
+                        "pause_requested": 0,
+                        **_UNLOCK,
+                    },
+                    [rejected, Event(EventType.MANUAL_REQUIRED, step=step, message=error)],
+                )
+            status = TaskStatus.PAUSED if pause else TaskStatus.QUEUED
+            fields = {"task_status": status, "last_error": outcome.reason, **_UNLOCK}
+            events = [rejected]
+            if pause:
+                fields["pause_requested"] = 0
+                events.append(Event(EventType.PAUSED, step=step))
+            return fields, events
 
         if isinstance(outcome, Deferred):
             deferred = Event(EventType.DEFERRED, step=step, message=outcome.reason)
@@ -650,18 +811,44 @@ class StateMachine:
             if (
                 status in _EXECUTING
                 or status in TERMINAL_STATUSES
-                or status == TaskStatus.AWAITING_APPROVAL
+                or status in (TaskStatus.AWAITING_APPROVAL, TaskStatus.AWAITING_EXTERNAL)
             ):
                 raise IllegalTransition(
                     task_id,
                     status,
                     "set-step",
-                    allowed="not running, awaiting approval or finished (even with --force)",
+                    allowed="not running, awaiting approval or external work, or finished "
+                    "(even with --force)",
                 )
             # An approval covered what came before it; moving the task voids it.
             return {"step": step, "approval_grant": None}, [
                 Event(EventType.FIELD_SET, step=step, message=f"step set to {step}")
             ]
+
+        self._user_action(task_id, decide)
+
+    def submit_external(
+        self, item: Mapping[str, Any], *, token: str, value: Mapping[str, Any], by: str | None
+    ) -> None:
+        """Record a submission for a claimed work item and queue its task, so the
+        executor validates it. Raises IllegalTransition if the task is not waiting
+        on that item, and ItemConflict if the item is not claimed with ``token``."""
+        task_id = item["task_id"]
+
+        def decide(task):
+            status = task["task_status"]
+            if status != TaskStatus.AWAITING_EXTERNAL or task["step"] != item["step"]:
+                raise IllegalTransition(
+                    task_id, status, "submit", allowed=f"awaiting_external on {item['step']}"
+                )
+            event = Event(
+                EventType.ITEM_SUBMITTED,
+                step=task["step"],
+                message=f"item {item['id']} submitted" + (f" by {by}" if by else ""),
+                payload={"item_id": item["id"], "by": by},
+            )
+            also = self._items().submitter(item["id"], token=token, value=value, by=by)
+            return {"task_status": TaskStatus.QUEUED, "last_error": None}, [event], also
 
         self._user_action(task_id, decide)
 

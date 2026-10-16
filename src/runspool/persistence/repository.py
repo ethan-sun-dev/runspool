@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 from runspool.models import TERMINAL_STATUSES, TaskStatus
@@ -197,6 +197,7 @@ class TaskRepository:
         expect: Iterable[TaskStatus],
         require: Mapping[str, Any] | None = None,
         events: Sequence[Event] = (),
+        also: Callable[[sqlite3.Connection], None] | None = None,
     ) -> bool:
         """Compare-and-set a task's lifecycle fields; for the state machine only.
 
@@ -204,6 +205,10 @@ class TaskRepository:
         ``require`` column still holds the given value (``None`` means null), then
         records ``events`` in the same transaction. Returns whether it applied; a
         False means another writer changed the task first.
+
+        ``also(conn)``, if given, runs in the same transaction once the task row has
+        changed (only external steps use it: their work items change with the task).
+        If it raises, nothing is applied and the exception propagates.
         """
         expect = tuple(expect)
         if not expect:
@@ -232,6 +237,8 @@ class TaskRepository:
                 return False
             for event in events:
                 insert_event(conn, task_id, event)
+            if also is not None:
+                also(conn)
             return True
 
     def heartbeat(

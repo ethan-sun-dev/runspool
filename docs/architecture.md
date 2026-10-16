@@ -263,6 +263,10 @@ or is held by another claim, is left alone.
 | Failed, retries exhausted | `terminated` | `manual_required` | `manual_required` |
 | Denied (gate) | `terminated` | `manual_required` | `manual_required` |
 | Needs approval (gate) | `terminated` | `paused` in place | `awaiting_approval` |
+| External step opens its work item | `terminated` | `paused` in place (no item) | `awaiting_external` |
+| Submission accepted | `terminated` | advance, then `paused` | as Succeeded |
+| Submission rejected, attempts left | `terminated` | `paused` in place | `queued` on the same step (next attempt) |
+| Submission rejected, none left | `terminated` | `manual_required` | `manual_required` |
 
 A workflow ends `partially_completed` rather than `completed` when the latest run
 of any step reported `degraded`.

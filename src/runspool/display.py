@@ -59,6 +59,7 @@ _STATUS_GLYPH = {
     "deferred": "…",
     "degraded": "⚠",
     "interrupted": "↯",
+    "rejected": "↺",
 }
 
 

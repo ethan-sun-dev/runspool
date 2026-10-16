@@ -15,13 +15,15 @@ from runspool.persistence.connection import Database
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
 from runspool.persistence.step_run_log import StepRunLog
+from runspool.persistence.work_items import WorkItems
 
 
 class Store:
     """SQLite store. ``repo``, ``log`` and ``step_runs`` are the contract surface;
     ``db`` is SQLite-specific and only for code that knows it has this store.
     ``artifacts`` (recorded artifacts) is optional for other stores: without it,
-    a step that returns artifacts fails."""
+    a step that returns artifacts fails. ``items`` (work items of external steps)
+    is optional too: without it, an external step fails."""
 
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -29,6 +31,7 @@ class Store:
         self.log = EventLog(db)
         self.step_runs = StepRunLog(db)
         self.artifacts = ArtifactLog(db)
+        self.items = WorkItems(db)
 
     def check(self) -> str:
         """Raise if the store is unusable; otherwise describe where it lives."""

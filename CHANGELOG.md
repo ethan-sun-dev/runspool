@@ -53,6 +53,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   to the step run. `runspool artifacts <id> [--all] [--json]` lists them.
 - Schema version 4: adds the `artifacts` table. Existing tables are unchanged;
   a database upgraded to v4 can no longer be opened by 0.2.x.
+- External steps, all optional (`runspool.engine.external`): a step that
+  subclasses `ExternalStep` is done outside the engine (by an AI agent, by a
+  person). When a task reaches it, the engine opens a work item from the step's
+  `request(ctx)` (`WorkRequest(kind, instructions, payload)`) and the task waits
+  in the new status `awaiting_external`. A client claims the item (one claimant
+  wins), then submits a JSON object; that only records it and queues the task.
+  The executor (`run` or the daemon, after the usual start-up checks) passes it
+  to the step's `validate(ctx, submission)`: a returned `StepResult` is accepted
+  and the workflow advances (updates and artifacts apply as for any step);
+  `SubmissionRejected(reason)` uses up the attempt and opens the next one with
+  the reason as `previous_error`, until `max_attempts` (default 3) is reached
+  and the task goes to `manual_required` (`retry` starts over). Any other error
+  is a step failure, and the submission is validated again on retry.
+  `Submission.file()` checks a submitted path and its sha256 (a file that
+  cannot be read rejects the submission naming only the kind of error, never
+  the path). A task that ends in any terminal state (for instance a last
+  external step skipped by its `when`), is terminated, or moves to another step
+  cancels its remaining active item. Steps that are not external are
+  unaffected. Known limits: claims do not expire, a submission is validated
+  the next time its task can be scheduled (queueing, quotas and approval can
+  delay that), and submissions have no size limit (see writing-steps.md).
+  `items submit --file` reports a file it cannot read by the kind of error
+  only, never its path.
+- `runspool items [--all] [--task ID] [--json]`, `items show <id>`, `items claim
+  <id>`, `items release <id>`, `items submit <id> --token T (--file PATH | --value
+  TEXT | --json-value JSON)`. If a plugin registers its own `items` command, it
+  is used instead of the built-in one.
+- Schema version 5: adds the `work_items` table. Existing tables are unchanged;
+  databases from 0.2.2 (v3) and with artifacts (v4) upgrade in place.
 
 ### Changed
 - The plugin set is fixed once the runtime starts (`run`, the daemon), with or
