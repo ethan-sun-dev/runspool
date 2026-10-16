@@ -36,6 +36,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mixing declared and undeclared steps may set `allow_unverified` to accept
   gaps only an undeclared step could fill (reported as unverified). See
   `runspool.engine.artifacts`.
+- Contracts are checked against the steps registered at startup, on purpose:
+  while any workflow uses them, plugin changes after startup (reloading a plugin
+  with `fiber.restart()`, loading or unloading one, registering or unregistering
+  a step) are refused with `PluginChangeRefused` before anything changes, and
+  take effect after a restart. `doctor` reports a `plugin changes` check once
+  such a change was refused in its process. Without contracts, plugins may
+  change at run time as before.
+- Kernel: `Kernel.guard_changes(guard)` lets an application refuse changes to
+  its plugins (load, reload, unload, provide or withdraw a service) once started;
+  `Context.check_change(what)` applies the same guard to a service's own
+  registrations. Shutting the kernel down is never refused.
 - If a plugin registers its own `artifacts` command, it is used instead of the
   new built-in one.
 - `StepResult.artifacts`: a step may record what it produced as

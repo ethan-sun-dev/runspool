@@ -195,6 +195,15 @@ requirement is not provided by an earlier step, the step is refused and the task
 goes to `manual_required` with the reason; other workflows keep running. Fix the
 workflow, then `runspool retry <id>`.
 
+**Checked against the steps registered at startup.** This is a deliberate
+boundary. While any workflow uses contracts, plugins cannot change while the
+runtime lives: reloading a plugin (`fiber.restart()`), loading or unloading one,
+and registering or unregistering a step after startup all raise
+`PluginChangeRefused` before anything changes, and `doctor` (in the same
+process) reports a `plugin changes` check saying a restart is needed. Restart
+`run` or the daemon for plugin changes to take effect. Without contracts,
+plugins may change at run time as before.
+
 A workflow none of whose steps declare anything is not checked. In a workflow
 that does declare, a requirement that no earlier step provides is an error even
 when an earlier step declares nothing. If you mix declared steps with older ones

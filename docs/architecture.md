@@ -336,7 +336,13 @@ and a busy timeout.
 ## Not in 0.2
 
 - **Hot reload.** The dependency mechanism can reload plugins, but in 0.2 the
-  plugin set changes only at startup and shutdown.
+  plugin set changes only at startup and shutdown. While any workflow uses
+  artifact contracts this is enforced: after startup, every plugin change
+  (`fiber.restart()`, loading or unloading a plugin, registering or
+  unregistering a step) is refused with `PluginChangeRefused` before it changes
+  anything, so contracts are always checked against the steps registered at
+  startup. Restart the runtime (or the daemon) to apply plugin changes. The
+  kernel mechanism is `Kernel.guard_changes`.
 - **Isolated service instances.** One provider per service name per process; to
   run two configurations, run two processes.
 - **An async kernel.** The kernel is synchronous. Steps, and the gate in front of
