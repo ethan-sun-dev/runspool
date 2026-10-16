@@ -78,9 +78,10 @@ a plugin's `apply`.
   `StartupError`, when an enabled plugin failed to load, as `run` and the daemon
   already did.
 - **New built-in commands**: `artifacts`, `items`, `events`, `plugins`. A
-  plugin's own `artifacts` or `items` command replaces the built-in one. A
-  plugin command named `events` or `plugins` is ignored with a warning; rename
-  it.
+  plugin's own command with one of these names keeps working: it is used
+  instead of the built-in one, which that profile then does not offer under its
+  name (`--help` lists the plugin's command). Without such a plugin, the
+  built-in command is there.
 - **Scripts and agents** reading `--json` output may see the new status
   `awaiting_external` and new event types (`item_*`, `children_spawned`) once
   a workflow uses external steps or child tasks. `doctor` lists more checks

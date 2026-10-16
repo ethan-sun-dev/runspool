@@ -138,3 +138,69 @@ def test_the_built_in_artifacts_command_is_there_without_such_a_plugin(tmp_path)
     path.write_text(f"workspace_root: {tmp_path / 'ws'}\n", encoding="utf-8")
     result = invoke(path, "artifacts", "1", "--json")
     assert result.exit_code == 1 and '"not_found"' in result.output
+
+
+# Built-in commands added in 0.3.0. A plugin may already have registered one of
+# these names (under 0.2.2, where none was built in); its command keeps working.
+NEWER_BUILTINS = ["artifacts", "items", "events", "plugins"]
+
+LEGACY_COMMAND = """
+import typer
+
+
+def contribute(ctx, config):
+    def legacy(task_id: int):
+        \"\"\"The plugin's own {name} command.\"\"\"
+        typer.echo(f"legacy {name} of {{task_id}}")
+
+    ctx.cli.register(legacy, name="{name}")
+
+
+contribute.inject = ["cli"]
+"""
+
+
+def _profile_with(tmp_path, monkeypatch, name):
+    module = f"legacy_{name}_command"
+    (tmp_path / f"{module}.py").write_text(LEGACY_COMMAND.format(name=name), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, module, raising=False)
+    path = tmp_path / "with-plugin.yaml"
+    path.write_text(
+        f"workspace_root: {tmp_path / 'ws'}\n"
+        f"patch:\n  - insert: [{{id: legacy, plugin: '{module}:contribute'}}]\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize("name", NEWER_BUILTINS)
+def test_a_plugin_command_named_like_a_newer_built_in_is_used(tmp_path, monkeypatch, capsys, name):
+    path = _profile_with(tmp_path, monkeypatch, name)
+    result = invoke(path, name, "7")
+    assert result.exit_code == 0, result.output
+    assert result.output == f"legacy {name} of 7\n"
+    assert "clashes" not in capsys.readouterr().err
+    listed = invoke(path, "--help").output  # listed once, with the plugin's own help
+    assert f"The plugin's own {name} command." in listed
+    assert sum(line.split()[1:2] == [name] for line in listed.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "name, args, expected",
+    [
+        ("artifacts", ["1", "--json"], '"not_found"'),
+        ("items", ["--json"], "[]"),
+        ("events", ["--since", "0", "--json"], '"cursor": 0'),
+        ("plugins", ["--json"], '"credentials"'),
+    ],
+)
+def test_without_such_a_plugin_the_built_in_is_there(tmp_path, monkeypatch, name, args, expected):
+    path = tmp_path / "no-plugin.yaml"
+    path.write_text(f"workspace_root: {tmp_path / 'ws'}\n", encoding="utf-8")
+    result = invoke(path, name, *args)
+    assert expected in result.output, result.output
+    assert "legacy" not in result.output
+    # The plugin is mounted by another profile only: this one keeps the built-in.
+    _profile_with(tmp_path, monkeypatch, name)
+    assert expected in invoke(path, name, *args).output

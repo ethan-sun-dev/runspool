@@ -809,7 +809,7 @@ def _config_path_from(argv: list[str]) -> Path:
 # Built-in commands added after plugins could already register commands of their
 # own. A plugin command of the same name predates them, so it wins: the built-in
 # yields instead of breaking that plugin.
-_YIELDING_BUILTINS = frozenset({"artifacts", "items"})
+_YIELDING_BUILTINS = frozenset({"artifacts", "items", "events", "plugins"})
 
 
 def build_app(config_path: Path | str) -> typer.Typer:
