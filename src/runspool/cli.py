@@ -907,8 +907,14 @@ def _version_answer(argv: list[str]) -> str | None:
     root options, eager ones in the order given, the same syntax checks), without
     booting the profile or running a command, and with its output held back. Only
     if ``--version`` is what it answers with is that answer given; otherwise
-    (``--help`` first, a bad option, ``--version`` after the command) ``None``,
-    and the full CLI parses the arguments, exactly as without ``--version``."""
+    (``--help`` first, a bad option, ``--version`` after the command, another
+    option with a callback such as ``--show-completion``) ``None``, and the full
+    CLI parses the arguments, exactly as without ``--version``.
+
+    Only the version's callback runs here. Every other option's callback (the
+    completion options print a script or install one, then exit) is replaced on
+    this throwaway command by one that hands over to the full CLI as soon as the
+    option is given, so it runs once, there, and never here."""
     if "--version" not in argv:
         return None
     import contextlib
@@ -916,10 +922,16 @@ def _version_answer(argv: list[str]) -> str | None:
 
     from runspool import __version__
 
+    command = typer.main.get_command(app)  # built afresh: changing it changes nothing else
+    for param in command.params:
+        if param.callback is not None and "--version" not in param.opts:
+            param.callback = _hand_over
     out = io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            typer.main.get_command(app).make_context("runspool", list(argv))
+            command.make_context("runspool", list(argv))
+    except _HandOver:
+        return None
     except Exception as exc:  # noqa: BLE001 - an eager option's exit, or a usage error
         # Click's Exit (from Typer's own copy of Click in recent versions, so not
         # imported here) carries exit_code; a usage error is reported by the full CLI.
@@ -927,6 +939,16 @@ def _version_answer(argv: list[str]) -> str | None:
         if getattr(exc, "exit_code", None) == 0 and answer == f"runspool {__version__}\n":
             return answer
     return None
+
+
+class _HandOver(Exception):
+    """Raised by the early parse when an option other than --version is given."""
+
+
+def _hand_over(ctx: Any, param: Any, value: Any) -> Any:
+    if value:  # given: what it does is the full CLI's to do
+        raise _HandOver(param.name)
+    return value
 
 
 def _command_in(argv: list[str]) -> str | None:
