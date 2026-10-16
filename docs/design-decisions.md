@@ -307,7 +307,19 @@ quotes the offending line can be a secret in a log.
 
 **Trade-off.** One more indirection for plugin authors, and secrets live outside
 the profile, so moving a setup to another machine means moving them separately.
-The credentials service is a seam: a keychain or vault provider can replace it.
+The credentials service is a seam: a vault provider can replace it.
+
+**The keychain.** On macOS, `credentials-local` can read the system keychain
+first, through `/usr/bin/security` by absolute path, and can be told not to
+read the process environment. *Why:* a keychain item's access list names the
+program that reads it; going through the system's own `security` tool keeps
+that stable when the Python interpreter changes. Not reading the environment
+means a variable another program injected under the same name cannot shadow
+the stored secret. The value comes back on a pipe, never in arguments (which
+other local users can list). A keychain that cannot answer is an error, never a
+quiet fallback to the next source: the profile asked for the keychain, and
+falling back would hide that it is not being used. *Trade-off:* one process
+per lookup (lookups are re-read every time, by design), and macOS only.
 
 ## 16. Versioned schema migrations
 

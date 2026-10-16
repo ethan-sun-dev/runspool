@@ -332,3 +332,10 @@ honoured; keep it owner-only), then a `.env` next to the profile, then
 restart. Values never go into logs, events or errors; `runspool doctor` reports
 only whether each name is configured and where, and flags a credentials file
 other users can read.
+
+On macOS, `credentials-local` can also look in the system keychain first
+(`keychain: {service: runspool}`, read through `/usr/bin/security`), and
+`environment: false` stops it reading the process environment, so a variable
+of the same name cannot shadow the stored value. Neither is on by default. If
+the keychain is configured but cannot be used, a lookup is an error, not a
+fallback. Details: [architecture.md](architecture.md#the-macos-keychain).
