@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- macOS keychain credentials: `credentials-local` takes `keychain:
+  {service, timeout_seconds}` to look a name up first as a generic password
+  item (service = `service`, account = the name), read with
+  `/usr/bin/security find-generic-password ... -w` by absolute path. Only names
+  are arguments; the value comes back on a pipe. A missing item (exit 44) is
+  absent; anything else (not macOS, no `security`, access denied, a timeout,
+  non-UTF-8 output) raises `KeychainError` with no value, no `security` output
+  and no chained exception, and no later source is asked. `doctor` gains a
+  `credentials keychain` check when it is configured. See
+  `runspool.core.keychain`.
+- `credentials-local` takes `environment: false` to stop reading the process
+  environment (with or without the keychain). Both settings are off by
+  default: without them, credentials resolve exactly as before.
 - `runspool events --since <cursor> [--task <id>] --json` and `EventLog.since()`:
   follow events across all tasks from a cursor. Event ids only increase, so a
   client in another process can resume from the last id it saw. `logs --json`

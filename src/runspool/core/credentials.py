@@ -7,19 +7,24 @@ needs no restart.
 
 ``credentials-local`` looks a name up in, in order:
 
-1. the process environment;
+0. the macOS keychain, only when configured (``keychain:``, see
+   :mod:`runspool.core.keychain`). A keychain that cannot answer (not macOS, no
+   ``/usr/bin/security``, access denied) is an error, never a reason to try the
+   next source;
+1. the process environment, unless ``environment: false``;
 2. the user's credentials file, ``$XDG_CONFIG_HOME/runspool/credentials.yaml``
    (default ``~/.config/runspool/credentials.yaml``), a ``NAME: value`` mapping that
    only its owner should be able to read;
 3. a ``.env`` file next to the profile;
 4. ``~/.env``.
 
-An empty value counts as absent. :meth:`LocalCredentials.describe` reports whether
-a name is configured and where, without the value, so it is safe to show (doctor
-does). Values never go into logs or events.
+An empty value counts as absent. Without ``keychain`` and with ``environment``
+left on (the defaults), the chain is exactly 1–4. :meth:`LocalCredentials.describe`
+reports whether a name is configured and where, without the value, so it is safe
+to show (doctor does). Values never go into logs or events.
 
 The credentials service is a seam: a profile may disable this entry and mount
-another provider of ``credentials`` (a keychain, a vault) with the same methods.
+another provider of ``credentials`` (a vault, say) with the same methods.
 """
 
 from __future__ import annotations
@@ -33,9 +38,10 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import yaml
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from runspool.core.doctor import Check
+from runspool.core.keychain import DEFAULT_SERVICE, DEFAULT_TIMEOUT, KeychainError, MacKeychain
 from runspool.kernel import Plugin
 
 # Environment-variable style (upper case): a lower-case hex string is far more likely
@@ -49,7 +55,7 @@ CredentialRef = Annotated[str, StringConstraints(pattern=CREDENTIAL_NAME_PATTERN
 class CredentialInfo:
     name: str
     configured: bool
-    source: str | None  # "env", "credentials file", "profile .env", "~/.env"
+    source: str | None  # "keychain", "env", "credentials file", "profile .env", "~/.env"
 
 
 def default_user_file() -> Path:
@@ -93,8 +99,12 @@ class LocalCredentials:
         user_file: Path | None = None,
         profile_env: Path | None = None,
         home_env: Path | None = None,
+        environment: bool = True,
+        keychain: MacKeychain | None = None,
     ) -> None:
         self._env = env if env is not None else os.environ
+        self.environment = environment  # False: the process environment is not read
+        self.keychain = keychain
         self.user_file = user_file if user_file is not None else default_user_file()
         self.profile_env = profile_env
         self.home_env = home_env
@@ -103,7 +113,11 @@ class LocalCredentials:
         self._problems: dict[Path, str] = {}
 
     def _lookup(self, name: str) -> tuple[str | None, str | None]:
-        value = self._env.get(name)
+        if self.keychain is not None:
+            value = self.keychain.lookup(name)  # KeychainError propagates: no fallback
+            if value:
+                return value, "keychain"
+        value = self._env.get(name) if self.environment else None
         if value:
             return value, "env"
         for label, read in (
@@ -117,17 +131,23 @@ class LocalCredentials:
         return None, None
 
     def resolve(self, name: str) -> str | None:
-        """The secret's value, or ``None`` if no source has a non-empty one."""
+        """The secret's value, or ``None`` if no source has a non-empty one. Raises
+        :class:`~runspool.core.keychain.KeychainError` if the keychain is configured
+        and cannot answer."""
         return self._lookup(name)[0]
 
     def describe(self, name: str) -> CredentialInfo:
-        """Whether ``name`` is configured and where; never the value."""
+        """Whether ``name`` is configured and where; never the value. Raises
+        ``KeychainError`` as :meth:`resolve` does."""
         value, source = self._lookup(name)
         return CredentialInfo(name, value is not None, source)
 
     def check(self, names: Iterable[str], label: str = "credentials") -> Check:
         """A doctor check that the given names are all configured (no values shown)."""
-        infos = [self.describe(name) for name in names]
+        try:
+            infos = [self.describe(name) for name in names]
+        except KeychainError as exc:
+            return Check(label, False, str(exc))
         missing = [info.name for info in infos if not info.configured]
         if missing:
             return Check(label, False, f"not configured: {', '.join(missing)}")
@@ -179,10 +199,28 @@ class LocalCredentials:
         return self._read(path, parse_dotenv)
 
 
+class KeychainConfig(BaseModel):
+    service: str = Field(DEFAULT_SERVICE, min_length=1)  # items' service; account = name
+    timeout_seconds: float = Field(DEFAULT_TIMEOUT, gt=0)
+
+    @field_validator("service")
+    @classmethod
+    def _plain_text(cls, value: str) -> str:
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("must be valid UTF-8 text") from None
+        if "\x00" in value:
+            raise ValueError("must not contain a NUL character")
+        return value
+
+
 class LocalCredentialsConfig(BaseModel):
     user_file: Path | None = None  # default: $XDG_CONFIG_HOME/runspool/credentials.yaml
     profile_dotenv: bool = True  # read .env next to the profile
     home_dotenv: bool = True  # read ~/.env
+    environment: bool = True  # read the process environment
+    keychain: KeychainConfig | None = None  # look in the macOS keychain first
 
 
 def _apply(ctx: Any, config: LocalCredentialsConfig) -> None:
@@ -194,8 +232,23 @@ def _apply(ctx: Any, config: LocalCredentialsConfig) -> None:
         user_file=user_file,
         profile_env=(base_dir / ".env") if (config.profile_dotenv and base_dir) else None,
         home_env=(Path.home() / ".env") if config.home_dotenv else None,
+        environment=config.environment,
+        keychain=(
+            MacKeychain(config.keychain.service, timeout=config.keychain.timeout_seconds)
+            if config.keychain is not None
+            else None
+        ),
     )
     ctx.provide("credentials", service)
+    if service.keychain is not None:
+        keychain = service.keychain
+        ctx.doctor.register(
+            lambda: Check(
+                "credentials keychain",
+                keychain.problem() is None,
+                keychain.problem() or f"{keychain.security} (service {keychain.service!r})",
+            )
+        )
     ctx.doctor.register(
         lambda: Check(
             "credentials file",

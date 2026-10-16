@@ -308,7 +308,8 @@ grant. No worker is held while a task waits.
 Configuration holds credential names (`CredentialRef`, `^[A-Z_][A-Z0-9_]*$`),
 never values. `credentials-local` looks a name up in order:
 
-1. the process environment;
+0. the macOS keychain, only when `keychain` is configured (see below);
+1. the process environment, unless `environment: false`;
 2. the user's credentials file, `$XDG_CONFIG_HOME/runspool/credentials.yaml`
    (default `~/.config/runspool/credentials.yaml`), a `NAME: value` mapping;
 3. a `.env` file next to the profile;
@@ -316,11 +317,50 @@ never values. `credentials-local` looks a name up in order:
 
 An empty value counts as absent. Every lookup re-reads the sources, so rotating a
 secret needs no restart. Its config keys are `user_file` (relative paths resolve
-against the profile), `profile_dotenv` and `home_dotenv`. A doctor check flags a
-credentials file readable by other users, and a source that cannot be read is
-reported without its content. `describe` and `check` report whether and where a
-name is configured, never the value. `credentials` is a seam: a keychain or
-vault plugin can replace it by providing the same methods.
+against the profile), `profile_dotenv`, `home_dotenv`, `environment` (default
+`true`) and `keychain` (default: not used). With the defaults the chain is
+exactly 1–4. A doctor check flags a credentials file readable by other users,
+and a source that cannot be read is reported without its content. `describe`
+and `check` report whether and where a name is configured, never the value.
+`credentials` is a seam: a vault plugin can replace it by providing the same
+methods.
+
+### The macOS keychain
+
+```yaml
+patch:
+  - id: credentials
+    config:
+      keychain: {service: runspool}   # timeout_seconds: 15 (the default)
+      environment: false              # never read the process environment
+```
+
+A credential is a generic password item whose service is `service` and whose
+account is the credential's name. Store one with
+`security add-generic-password -U -s runspool -a WECHAT_APPSECRET -w`; with `-w`
+last and no value, `security` prompts for it, so the value is on no command line
+and in no shell history. Values should be printable text: `security` may print
+other data hex-encoded.
+
+A lookup runs `/usr/bin/security find-generic-password -s <service> -a <NAME> -w`
+by absolute path. Only the service and the name are arguments; the value comes
+back on the child's standard output through a pipe that only RunSpool reads
+(standard input is `/dev/null`, standard error is discarded). Process arguments
+are visible to other local users (`ps`), so no value is ever passed as one.
+
+- An item that exists: its value (one trailing newline removed). An empty value
+  counts as absent.
+- No such item (`security` exits 44): absent; the next source is asked.
+- Anything else — not macOS, no `/usr/bin/security`, a locked keychain, access
+  denied, a timeout, output that is not UTF-8 — raises `KeychainError`
+  (from `runspool.core.keychain`) and no later source is asked. Its message
+  holds the name and an exit status at most, never the output or `security`'s
+  own messages, and it chains no other exception. A step that resolves a
+  credential then fails with that message, and `check()` reports it.
+
+`environment: false` works with or without the keychain. When the keychain is
+configured, `doctor` adds a `credentials keychain` check: whether
+`/usr/bin/security` can be used on this machine.
 
 ## Schema migrations
 
