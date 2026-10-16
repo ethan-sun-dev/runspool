@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 
 import pytest
@@ -182,8 +183,11 @@ def test_a_plugin_command_named_like_a_newer_built_in_is_used(tmp_path, monkeypa
     assert result.output == f"legacy {name} of 7\n"
     assert "clashes" not in capsys.readouterr().err
     listed = invoke(path, "--help").output  # listed once, with the plugin's own help
+    listed = re.sub(r"\x1b\[[0-9;]*m", "", listed)  # colours, which CI may force
     assert f"The plugin's own {name} command." in listed
-    assert sum(line.split()[1:2] == [name] for line in listed.splitlines()) == 1
+    # A command row starts with its name, inside a box or not (rich or plain help).
+    rows = [line for line in listed.splitlines() if re.match(rf"^[\s│|]*{name}\s", line)]
+    assert len(rows) == 1 and "The plugin's own" in rows[0]
 
 
 @pytest.mark.parametrize(
