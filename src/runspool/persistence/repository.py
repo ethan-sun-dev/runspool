@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from runspool.models import TERMINAL_STATUSES, TaskStatus
+from runspool.models import TERMINAL_STATUSES, EventType, TaskStatus
 from runspool.persistence.connection import Database
 from runspool.persistence.event_log import Event, insert_event
 
@@ -75,6 +75,97 @@ class TaskRepository:
             if event is not None:
                 insert_event(conn, task_id, event)
             return task_id
+
+    def prepare_updates(self, fields: Mapping[str, Any]) -> dict[str, Any]:
+        """See :func:`prepare_updates`: what update_fields would write, checked."""
+        return prepare_updates(fields)
+
+    def result_writer(self, task_id: int, plan: Any) -> Callable[[sqlite3.Connection], None]:
+        """A hook writing a spawning step's result inside its transition: the
+        result's ``updates`` (prepared by :func:`prepare_updates`) and the closing of
+        its step run. They are applied only together with the transition (which
+        already required the claim token), never left behind by one that fails."""
+
+        def hook(conn: sqlite3.Connection) -> None:
+            if plan.updates:
+                assignments = ", ".join(f"{col} = ?" for col in plan.updates)
+                conn.execute(
+                    f"update tasks set {assignments}, updated_at = datetime('now') where id = ?",
+                    [*plan.updates.values(), task_id],
+                )
+            if plan.step_run_id is not None:
+                conn.execute(
+                    "update step_runs set status = ?, finished_at = datetime('now'), "
+                    "duration_ms = ?, note = ? where id = ? and status = 'running'",
+                    (plan.run_status, plan.duration_ms, plan.note, plan.step_run_id),
+                )
+
+        return hook
+
+    def spawner(self, parent_task_id: int, plan: Any) -> Callable[[sqlite3.Connection], None]:
+        """A hook creating the children of ``plan`` (a SpawnPlan) inside the parent's
+        transition, with their "created" events, a ``task_spawns`` row each and a
+        ``children_spawned`` event on the parent. A child whose key the parent
+        already spawned is not created again (its id goes to ``plan.existing``)."""
+
+        def hook(conn: sqlite3.Connection) -> None:
+            plan.created.clear()
+            plan.existing.clear()
+            for child in plan.children:
+                if child.key is not None:
+                    row = conn.execute(
+                        "select child_task_id from task_spawns "
+                        "where parent_task_id = ? and spawn_key = ?",
+                        (parent_task_id, child.key),
+                    ).fetchone()
+                    if row is not None:
+                        plan.existing.append(int(row[0]))
+                        continue
+                cur = conn.execute(
+                    "insert into tasks (input, name, workflow, step, task_status, max_retries, "
+                    "metadata, parent_task_id) values (?,?,?,?,?,?,?,?)",
+                    (
+                        child.input,
+                        child.name,
+                        child.workflow,
+                        child.first_step,
+                        TaskStatus.QUEUED,
+                        child.max_retries,
+                        child.metadata_json
+                        if child.metadata_json is not None
+                        else _dump(child.metadata),
+                        parent_task_id,
+                    ),
+                )
+                child_id = int(cur.lastrowid)
+                insert_event(
+                    conn,
+                    child_id,
+                    Event(
+                        EventType.CREATED,
+                        step=child.first_step,
+                        message=f"task created from {parent_task_id}",
+                    ),
+                )
+                conn.execute(
+                    "insert into task_spawns (parent_task_id, child_task_id, step, step_run_id, "
+                    "spawn_key) values (?,?,?,?,?)",
+                    (parent_task_id, child_id, plan.step, plan.step_run_id, child.key),
+                )
+                plan.created.append(child_id)
+            insert_event(
+                conn,
+                parent_task_id,
+                Event(
+                    EventType.CHILDREN_SPAWNED,
+                    step=plan.step,
+                    message=f"spawned {len(plan.created)} child task(s)"
+                    + (f", {len(plan.existing)} already spawned" if plan.existing else ""),
+                    payload={"created": list(plan.created), "existing": list(plan.existing)},
+                ),
+            )
+
+        return hook
 
     def list_children(self, parent_task_id: int) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
@@ -278,13 +369,9 @@ class TaskRepository:
         # the repository does pure CRUD only.
         if not fields:
             return False
-        bad = set(fields) - UPDATABLE_COLUMNS
-        if bad:
-            lifecycle = sorted(bad & LIFECYCLE_COLUMNS)
-            hint = f" ({', '.join(lifecycle)}: use the state machine)" if lifecycle else ""
-            raise ValueError(f"columns not updatable: {sorted(bad)}{hint}")
-        assignments = ", ".join(f"{col} = ?" for col in fields)
-        values = [_dump(v) if col == "metadata" else v for col, v in fields.items()]
+        prepared = prepare_updates(fields)
+        assignments = ", ".join(f"{col} = ?" for col in prepared)
+        values = list(prepared.values())
         values.append(task_id)
         where = "id = ?"
         if token is not None:
@@ -305,6 +392,23 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if "metadata" in task:
         task["metadata"] = json.loads(task["metadata"]) if task["metadata"] else {}
     return task
+
+
+def prepare_updates(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """``fields`` as update_fields writes them: only non-lifecycle columns, with
+    metadata serialized. Raises ValueError for any other column."""
+    bad = set(fields) - UPDATABLE_COLUMNS
+    if bad:
+        lifecycle = sorted(bad & LIFECYCLE_COLUMNS)
+        hint = f" ({', '.join(lifecycle)}: use the state machine)" if lifecycle else ""
+        raise ValueError(f"columns not updatable: {sorted(bad)}{hint}")
+    return {col: _dump(v) if col == "metadata" else v for col, v in fields.items()}
+
+
+def dump_metadata(metadata: Any) -> str | None:
+    """``metadata`` as it is stored (a JSON object, keys sorted). Raises ValueError
+    or TypeError for anything that cannot be stored so."""
+    return _dump(metadata)
 
 
 def _dump(metadata: Any) -> str | None:

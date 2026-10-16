@@ -61,6 +61,8 @@ class EventType(StrEnum):
     ITEM_RELEASED = "item_released"
     ITEM_SUBMITTED = "item_submitted"
     ITEM_REJECTED = "item_rejected"
+    # A step spawned child tasks (StepResult.spawn), recorded on the parent.
+    CHILDREN_SPAWNED = "children_spawned"
 
 
 @dataclass(frozen=True)

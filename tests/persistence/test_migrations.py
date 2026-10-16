@@ -120,15 +120,15 @@ WORK_ITEM_COLUMNS = {
 }
 
 
-def test_a_v3_database_from_0_2_2_is_upgraded_to_v5_keeping_everything(tmp_path):
+def test_a_v3_database_from_0_2_2_is_upgraded_to_v6_keeping_everything(tmp_path):
     path = _v3_database(tmp_path / "v3.db")
     tables = ("tasks", "task_events", "step_runs")
     before = {t: _rows(path, f"select * from {t} order by id") for t in tables}
     columns_before = {t: columns(path, t) for t in tables}
 
-    assert SCHEMA_VERSION == 5
-    assert Database(path).init() == 5
-    assert _rows(path, "select value from schema_meta where key = 'version'") == [("5",)]
+    assert SCHEMA_VERSION == 6
+    assert Database(path).init() == 6
+    assert _rows(path, "select value from schema_meta where key = 'version'") == [("6",)]
     for t in tables:  # only a table was added: existing tables and rows are untouched
         assert columns(path, t) == columns_before[t]
         assert _rows(path, f"select * from {t} order by id") == before[t]
@@ -146,9 +146,73 @@ def test_a_v3_database_from_0_2_2_is_upgraded_to_v5_keeping_everything(tmp_path)
     assert _rows(path, "select count(*) from artifacts") == [(0,)]
     assert columns(path, "work_items") == WORK_ITEM_COLUMNS
     assert _rows(path, "select count(*) from work_items") == [(0,)]
+    assert columns(path, "task_spawns") == TASK_SPAWN_COLUMNS
+    assert _rows(path, "select count(*) from task_spawns") == [(0,)]
 
     task = TaskRepository(Database(path)).get_task(1)
     assert task["name"] == "笔记 一" and task["task_status"] == "completed"
+
+
+TASK_SPAWN_COLUMNS = {
+    "id",
+    "parent_task_id",
+    "child_task_id",
+    "step",
+    "step_run_id",
+    "spawn_key",
+    "created_at",
+}
+
+
+def _v5_database(path):
+    """The database RunSpool left behind with external steps (R-3, schema v5); see
+    the fixture's header."""
+    with sqlite3.connect(path) as conn:
+        conn.executescript((FIXTURES / "v5_runspool_r3.sql").read_text(encoding="utf-8"))
+    return path
+
+
+def test_a_v5_database_with_work_items_is_upgraded_to_v6_keeping_everything(tmp_path):
+    path = _v5_database(tmp_path / "v5.db")
+    tables = ("tasks", "task_events", "step_runs", "artifacts", "work_items")
+    before = {t: _rows(path, f"select * from {t} order by id") for t in tables}
+    columns_before = {t: columns(path, t) for t in tables}
+    assert _rows(path, "select value from schema_meta where key = 'version'") == [("5",)]
+
+    assert Database(path).init() == 6
+    assert _rows(path, "select value from schema_meta where key = 'version'") == [("6",)]
+    for t in tables:  # only a table was added: existing tables and rows are untouched
+        assert columns(path, t) == columns_before[t]
+        assert _rows(path, f"select * from {t} order by id") == before[t]
+    assert columns(path, "task_spawns") == TASK_SPAWN_COLUMNS
+    assert _rows(path, "select count(*) from task_spawns") == [(0,)]
+
+    from runspool.persistence.work_items import WorkItems
+
+    db = Database(path)
+    (item,) = WorkItems(db).list_items(task_id=2)
+    assert item["status"] == "submitted" and item["instructions"] == "校对「笔记」"
+    assert item["submission"] == {"value": "改好了"} and item["submitted_by"] == "人工"
+    assert TaskRepository(db).get_task(2)["task_status"] == "queued"
+
+
+def test_an_upgraded_database_records_spawned_children(tmp_path):
+    from runspool.engine.children import PlannedChild, SpawnPlan
+
+    db = Database(_v5_database(tmp_path / "v5.db"))
+    db.init()
+    repo = TaskRepository(db)
+    child = PlannedChild("子 任务", "local_file", "ingest_file", 3, "子", {"来源": "笔记"}, "k1")
+    plan = SpawnPlan([child], step="archive", step_run_id=None)
+    with sqlite3.connect(db.path) as conn:
+        repo.spawner(1, plan)(conn)
+    (created,) = plan.created
+    row = repo.get_task(created)
+    assert (row["parent_task_id"], row["input"], row["metadata"]) == (
+        1,
+        "子 任务",
+        {"来源": "笔记"},
+    )
 
 
 def _v4_database(path):
@@ -159,20 +223,22 @@ def _v4_database(path):
     return path
 
 
-def test_a_v4_database_with_artifacts_is_upgraded_to_v5_keeping_everything(tmp_path):
+def test_a_v4_database_with_artifacts_is_upgraded_to_v6_keeping_everything(tmp_path):
     path = _v4_database(tmp_path / "v4.db")
     tables = ("tasks", "task_events", "step_runs", "artifacts")
     before = {t: _rows(path, f"select * from {t} order by id") for t in tables}
     columns_before = {t: columns(path, t) for t in tables}
     assert _rows(path, "select value from schema_meta where key = 'version'") == [("4",)]
 
-    assert Database(path).init() == 5
-    assert _rows(path, "select value from schema_meta where key = 'version'") == [("5",)]
+    assert Database(path).init() == 6
+    assert _rows(path, "select value from schema_meta where key = 'version'") == [("6",)]
     for t in tables:  # only a table was added: existing tables and rows are untouched
         assert columns(path, t) == columns_before[t]
         assert _rows(path, f"select * from {t} order by id") == before[t]
     assert columns(path, "work_items") == WORK_ITEM_COLUMNS
     assert _rows(path, "select count(*) from work_items") == [(0,)]
+    assert columns(path, "task_spawns") == TASK_SPAWN_COLUMNS
+    assert _rows(path, "select count(*) from task_spawns") == [(0,)]
 
     from runspool.persistence.artifact_log import ArtifactLog
 
@@ -218,8 +284,8 @@ def test_the_upgraded_database_records_artifacts(tmp_path):
     assert (row["path"], row["sha256"]) == ("ready/1/笔记 一.md", "ab" * 32)
 
 
-@pytest.mark.parametrize("version", [4, 5])
-def test_migrations_4_and_5_can_be_applied_again_after_an_interruption(tmp_path, version):
+@pytest.mark.parametrize("version", [4, 5, 6])
+def test_migrations_4_to_6_can_be_applied_again_after_an_interruption(tmp_path, version):
     from runspool.persistence.schema import MIGRATIONS
 
     db = Database(tmp_path / "t.db")

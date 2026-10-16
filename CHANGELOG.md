@@ -82,6 +82,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is used instead of the built-in one.
 - Schema version 5: adds the `work_items` table. Existing tables are unchanged;
   databases from 0.2.2 (v3) and with artifacts (v4) upgrade in place.
+- Child tasks from a step result (`runspool.engine.children`): a step may return
+  `StepResult(spawn=[ChildTask(input, workflow, name=None, metadata=None,
+  key=None)])`. When the step succeeds, the children are created in the same
+  transaction that advances the parent (with a `created` event each, and a
+  `children_spawned` event on the parent), so a crash leaves both or neither and
+  a re-run never creates duplicates. Children are independent tasks
+  (`parent_task_id` set, queued on their workflow's first step); the parent does
+  not wait for them. A `key` names a child within its parent: running the step
+  again (after `set-step`) does not create that child a second time. Nothing is
+  spawned when the step fails or defers, or when its boundary terminates the
+  task; a spawn that does not validate (not a list or tuple, even if empty or
+  falsy; an unknown workflow; a key used twice; metadata that cannot be stored
+  as a JSON object with sorted keys; an input, workflow name, first step,
+  name, key or metadata that is not valid UTF-8) fails the
+  step before any of its result is written, and creates nothing. A spawning
+  step's `updates` and the end of its step run are written in the same
+  transaction as its children and the parent's transition, so a failed or
+  interrupted attempt leaves no update behind. An
+  accepted external step submission may spawn children too.
+- Schema version 6: adds the `task_spawns` table (which step run of a parent
+  spawned which child, and its key). Existing tables are unchanged; databases
+  from 0.2.2 (v3), v4 and v5 upgrade in place.
 
 ### Changed
 - The plugin set is fixed once the runtime starts (`run`, the daemon), with or

@@ -230,6 +230,75 @@ Rows are never updated: a step that runs again records again. Read them with
 `degraded` (it failed after recording, the process died) are left out unless you
 pass `include_unfinished=True`.
 
+## Spawning child tasks
+
+Optional. A step can fan its task out: return the child tasks to create in
+`StepResult.spawn`.
+
+```python
+from runspool.engine.children import ChildTask
+
+
+class Fanout(Step):
+    name = "fanout"
+
+    def run(self, ctx: StepContext) -> StepResult:
+        return StepResult(
+            message="one unit per target",
+            spawn=[
+                ChildTask(ctx.task["input"], "unit", name=target,
+                          metadata={"target": target}, key=target)
+                for target in ("blog", "newsletter")
+            ],
+        )
+```
+
+**Created with the step.** When the step succeeds (also when it is `degraded`),
+the children are created in the same database transaction that advances the
+parent, and so is the rest of that step's result: its `updates` and the end of
+its step run (`ok` / `degraded`). A crash leaves either all of it (the parent
+moved on, its children exist, its updates are written) or none of it (the run is
+recovered as interrupted and the step runs again), so a re-run after a crash
+never creates duplicates and never sees an update from the attempt that did not
+complete (a `when` that reads one still runs the step). A stale worker whose
+claim was taken back writes nothing of it. Nothing is spawned when the step fails
+or defers, or when a terminate request ends the task at that boundary (its
+updates are still written then, as for any step); a pause at the boundary does
+not stop it. Artifacts are recorded before, tied to the run, and only listed once
+that run has ended `ok` or `degraded`.
+
+**Independent tasks.** Each child is a task of its own, queued on the first step
+of its workflow, with `parent_task_id` set to the parent and the configured
+`max_retries`. The parent does not wait for its children: it goes on to its next
+step, or finishes. If something should happen once the children are done, give
+the children a step for it (or poll `store.repo.list_children(parent_id)`).
+
+**Keys.** `key` names a child within its parent. If the spawning step runs again
+(after `runspool set-step` back to it), a child whose key the parent already
+spawned is not created again; children without a key are created every time the
+step succeeds. Each spawn is recorded (which step run of the parent spawned which
+child, and its key), and the parent gets a `children_spawned` event listing the
+ids created and those already spawned.
+
+**Validation.** The spawn is checked before anything of the result is written
+(artifacts, updates): it must be a list or tuple (an empty one spawns nothing;
+anything else fails, even an empty or falsy value such as `{}`, `0` or `""`), and
+every entry a `ChildTask` with a non-empty `input`, a defined `workflow`, a string
+`name`, a `metadata` that can be stored as a JSON object (string keys: it is
+stored with its keys sorted, and checked the same way) and a non-empty `key` used
+once. A spawn that does not validate fails the step (the error names the child by
+position, never its input) and nothing is created. Every text a child is stored
+with must also be valid UTF-8 (a lone surrogate, as decoded JSON or a YAML
+`\uD800` escape can produce, is refused, without echoing it): its `input`, its
+`workflow` name, the first step of that workflow, its `name`, its `key` and its
+serialized `metadata`. The result's `updates` are not checked this way: if they
+cannot be stored, the transaction below rolls back. If the store still
+fails while writing the transaction, it rolls back (no child, no update) and the
+step fails rather than leaving the task running. If the transaction committed
+and only reading the task back afterwards fails, nothing is undone: the failure
+is reported, and the committed run, children and artifacts stay as they are. An external step's validator may return
+a spawn too: the children are created when the submission is accepted.
+
 ## External steps
 
 Optional. Some steps are done outside the engine: an AI agent writes a draft, a

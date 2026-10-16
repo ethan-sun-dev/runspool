@@ -16,6 +16,11 @@ manual_required once retries are exhausted)::
     failed / manual_required --retry--> queued
     queued (deferred, waiting) --wake--> queued (runnable now)
 
+A successful step may spawn child tasks (runspool.engine.children): they are created
+in the same transaction as its transition (not when that transition terminates the
+task), so a crash never leaves the parent advanced without them, or them without
+the parent advanced.
+
 External steps (runspool.engine.external)::
 
     running --(work item opened)--> awaiting_external --submit--> queued
@@ -70,11 +75,13 @@ _UNREAD = object()
 class Succeeded:
     """The step returned. ``degraded``: it ran but did not fully do its job.
     ``item_id``: an external step's submission was accepted (that work item, checked
-    by step run ``step_run_id``)."""
+    by step run ``step_run_id``). ``spawn``: the child tasks to create with the
+    transition (a SpawnPlan, see runspool.engine.children)."""
 
     degraded: bool = False
     item_id: int | None = None
     step_run_id: int | None = None
+    spawn: Any = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +147,11 @@ class Rejected:
 
 
 Outcome = Succeeded | Deferred | Failed | Denied | NeedsApproval | AwaitsExternal | Rejected
+
+
+class TransitionCommitted(RuntimeError):
+    """A transition was committed, but the task could not be read back afterwards.
+    Nothing must be undone or rewritten: the change is in the database."""
 
 
 class IllegalTransition(Exception):
@@ -301,10 +313,40 @@ class StateMachine:
                 expect=(task["task_status"],),
                 require=require,
                 events=events,
-                also=self._item_change(task, outcome, fields),
+                also=chain(
+                    self._item_change(task, outcome, fields),
+                    self._result_change(task, outcome),
+                    self._spawn_change(task, outcome, fields),
+                ),
             ):
-                return self.repo.get_task(task_id)
+                return self._read_back(task_id)
         return self.repo.get_task(task_id)
+
+    def _read_back(self, task_id: int) -> dict[str, Any] | None:
+        """The task after a committed transition; raises TransitionCommitted if it
+        cannot be read (after a few tries), so no caller mistakes it for a rollback."""
+        error: Exception | None = None
+        for _ in range(3):
+            try:
+                return self.repo.get_task(task_id)
+            except Exception as exc:  # noqa: BLE001 - reported as committed, below
+                error = exc
+        raise TransitionCommitted(
+            f"task {task_id}: transition committed, but reading it back failed "
+            f"({type(error).__name__})"
+        ) from error
+
+    def _result_change(
+        self, task: dict[str, Any], outcome: Outcome
+    ) -> Callable[[Any], None] | None:
+        """A spawning step's updates and step run end, written with its transition
+        (whatever it is, a terminate included)."""
+        if not isinstance(outcome, Succeeded) or outcome.spawn is None:
+            return None
+        writer = getattr(self.repo, "result_writer", None)
+        if writer is None:
+            raise RuntimeError("the active store cannot spawn child tasks")
+        return writer(task["id"], outcome.spawn)
 
     def _item_change(
         self, task: dict[str, Any], outcome: Outcome, fields: dict[str, Any]
@@ -335,6 +377,20 @@ class StateMachine:
                 step_run_id=outcome.step_run_id,
             )
         return None
+
+    def _spawn_change(
+        self, task: dict[str, Any], outcome: Outcome, fields: dict[str, Any]
+    ) -> Callable[[Any], None] | None:
+        """Create a successful step's children with its transition; not when the
+        boundary terminates the task instead."""
+        if not isinstance(outcome, Succeeded) or outcome.spawn is None:
+            return None
+        if not outcome.spawn.children or fields.get("task_status") == TaskStatus.TERMINATED:
+            return None
+        spawner = getattr(self.repo, "spawner", None)
+        if spawner is None:
+            raise RuntimeError("the active store cannot spawn child tasks")
+        return spawner(task["id"], outcome.spawn)
 
     def _items(self) -> Any:
         if self.items is None:

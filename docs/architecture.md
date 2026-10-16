@@ -268,6 +268,9 @@ or is held by another claim, is left alone.
 | Submission rejected, attempts left | `terminated` | `paused` in place | `queued` on the same step (next attempt) |
 | Submission rejected, none left | `terminated` | `manual_required` | `manual_required` |
 
+A succeeded step's `StepResult.spawn` children are created with its transition, in
+the same transaction, in every column above except `terminated`.
+
 A workflow ends `partially_completed` rather than `completed` when the latest run
 of any step reported `degraded`.
 
