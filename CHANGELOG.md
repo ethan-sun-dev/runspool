@@ -36,19 +36,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mixing declared and undeclared steps may set `allow_unverified` to accept
   gaps only an undeclared step could fill (reported as unverified). See
   `runspool.engine.artifacts`.
-- Contracts are checked against the steps registered at startup, on purpose:
-  while any workflow uses them, plugin changes after startup (reloading a plugin
-  with `fiber.restart()`, loading or unloading one, registering or unregistering
-  a step) are refused with `PluginChangeRefused` before anything changes, and
-  take effect after a restart. `doctor` reports a `plugin changes` check once
-  such a change was refused in its process. Without contracts, plugins may
-  change at run time as before.
+- Contracts are checked against the steps registered when the runtime started
+  (see "Changed": the plugin set is fixed from then on).
 - Kernel: `Kernel.guard_changes(guard)` lets an application refuse changes to
   its plugins (load, reload, unload, provide or withdraw a service) once started;
   `Fiber.check_change(what)` applies the same guard to a service's own
   registrations (on the fiber, so no name is added to `Context`, whose
   attributes are service names); `Fiber.effect(..., change=...)` marks a
-  registration whose early dispose is checked too. Shutting the kernel down is never refused.
+  registration whose early dispose is checked too. Shutting the kernel down is
+  never refused.
 - If a plugin registers its own `artifacts` command, it is used instead of the
   new built-in one.
 - `StepResult.artifacts`: a step may record what it produced as
@@ -59,6 +55,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a database upgraded to v4 can no longer be opened by 0.2.x.
 
 ### Changed
+- The plugin set is fixed once the runtime starts (`run`, the daemon), with or
+  without artifact contracts: every later plugin change (reloading a plugin with
+  `fiber.restart()`, loading or unloading one, providing or withdrawing a
+  service, registering or unregistering a step) is refused with
+  `PluginChangeRefused` before anything changes. Restart the runtime or the
+  daemon for plugin changes to take effect. `doctor` reports a `plugin changes`
+  check once such a change was refused in its process. Code embedding RunSpool
+  may still load plugins into a booted kernel before the runtime starts. This
+  withdraws run-time plugin reloading, which 0.2 already did not support (the
+  plugin set changed only at startup and shutdown): what a reloaded plugin
+  would declare is only known once its old version is gone, so a reload cannot
+  be checked in advance.
 - Crash recovery runs only in the lock holder, so a second process no longer
   requeues work another process is running.
 - Upgrading the schema of an existing database waits for the executor lock:
