@@ -66,9 +66,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the reason as `previous_error`, until `max_attempts` (default 3) is reached
   and the task goes to `manual_required` (`retry` starts over). Any other error
   is a step failure, and the submission is validated again on retry.
-  `Submission.file()` checks a submitted path and its sha256. Terminating a
-  task, or moving it to another step, cancels its active item. Steps that are
-  not external are unaffected.
+  `Submission.file()` checks a submitted path and its sha256 (a file that
+  cannot be read rejects the submission naming only the kind of error, never
+  the path). A task that ends in any terminal state (for instance a last
+  external step skipped by its `when`), is terminated, or moves to another step
+  cancels its remaining active item. Steps that are not external are
+  unaffected. Known limits: claims do not expire, a submission is validated on
+  the next `run` / daemon round, and submissions have no size limit (see
+  writing-steps.md).
 - `runspool items [--all] [--task ID] [--json]`, `items show <id>`, `items claim
   <id>`, `items release <id>`, `items submit <id> --token T (--file PATH | --value
   TEXT | --json-value JSON)`. If a plugin registers its own `items` command, it

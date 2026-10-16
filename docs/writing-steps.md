@@ -290,13 +290,31 @@ and under the executor lock; it never runs in the submitting process.
   submission is kept and validated again on the next try.
 
 `Submission.file(root)` resolves `value["path"]` (relative to `root`), and rejects
-the submission when the path is missing, the file does not exist, or a given
-`sha256` does not match; its reasons never contain the path.
+the submission when the path is missing, the file does not exist or cannot be read
+(permission denied, removed while being read: the reason names only the kind of
+error), or a given `sha256` does not match; its reasons never contain the path.
 
 An external step can declare `requires` / `provides` like any step, and what its
 validator records is checked against `provides`. `side_effect = True` asks for
-approval before the item is opened. Terminating a waiting task, or moving a task
-to another step, cancels its active item; a waiting task cannot be paused.
+approval before the item is opened. A task that ends in any terminal state (for
+instance when a last external step is skipped because its `when` no longer
+holds), is terminated, or moves to another step cancels its remaining active item,
+in the same transaction; a waiting task cannot be paused.
+
+**Known limits.**
+
+- *Claims do not expire.* If a claimant goes away (it crashed, the person left),
+  the item stays `claimed` until someone runs `runspool items release <id>
+  --force`. Expiring claims automatically would need lease renewal and a way to
+  fence off the old claimant; without that, releasing on a timeout could have the
+  same external work done twice.
+- *Validation is not immediate.* A submission is checked when the task next runs:
+  on the next `runspool run`, or the daemon's next round (at most about one poll
+  interval later).
+- *Submissions have no size limit.* The submitted JSON object is stored as it is;
+  the command line and library are a local, trusted boundary. Submit large
+  content as a file (`--file`, path plus sha256) rather than inline. A
+  configurable byte limit may come later.
 
 Clients that are not the command line use the same functions:
 `runspool.commands.claim_item`, `release_item`, `submit_item` and `get_item`, and
