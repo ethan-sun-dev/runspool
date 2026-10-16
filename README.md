@@ -332,8 +332,9 @@ touch the database. The reasoning behind these boundaries is in
   is no hosted service and nothing is uploaded by default.
 - **No secrets required.** The engine and built-in steps need no API keys. A
   plugin that does (like runspool-wechat) refers to secrets by name only; values
-  come from your environment or an owner-only credentials file, never from config,
-  logs or errors.
+  come from your environment, an owner-only credentials file, a `.env` next to
+  the profile or `~/.env` (or, if you configure it, the macOS keychain), never
+  from config, and never appear in logs or errors.
 - **Approval before side effects.** A step that publishes, uploads or sends runs
   only after you approve that attempt; without an approval policy it is refused,
   never run.

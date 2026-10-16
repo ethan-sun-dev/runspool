@@ -40,9 +40,13 @@ With pip: `pip install -U "runspool==0.3.0"` (and `"runspool-wechat==0.2.1"`).
 
 The first time a 0.3.0 command opens the database (any command, `runspool
 status` included), it upgrades it in place to schema version 6. 0.2.x writes
-version 3; a 0.1.x database has no version and is upgraded from its layout.
-The upgrade only adds tables (`artifacts`, `work_items`, `task_spawns`).
-Existing tables, columns and rows are not changed. It needs the executor lock:
+version 3. From version 3 to 6 the upgrade only adds tables (`artifacts`,
+`work_items`, `task_spawns`): existing tables, columns and rows are not
+changed. A 0.1.x database has no version: it first goes through migrations 1
+to 3, which add columns to its existing tables (`progress`, `name`,
+`claim_token`, `metadata`, `parent_task_id` and `approval_grant` on `tasks`,
+`note` on `step_runs`, each only if missing), and then gains the three
+tables. The upgrade needs the executor lock:
 if another 0.3.0 process is executing tasks, the command fails with
 `ExecutorBusy` and leaves the database as it was.
 
@@ -85,9 +89,30 @@ a plugin's `apply`.
 - **Artifact contracts** apply only to workflows that declare them; see
   [writing-steps.md](writing-steps.md). Nothing changes for workflows that
   declare nothing.
-- **Custom stores** (a replacement for the `store` plugin) keep working, but
-  need `items` and `spawner`, and `transition(..., also=)`, before a workflow
-  can use external steps or child tasks.
+- **Custom stores** (a replacement for the `store` plugin): see below.
+
+### Custom stores
+
+A store that replaces the `store` plugin keeps working for what 0.2 did. Each
+0.3.0 feature needs more from it, and fails with an error naming what is
+missing when the store does not have it:
+
+| Feature | What the store needs | Without it |
+|---|---|---|
+| Recorded artifacts | `store.artifacts`: `record(...)`, `list_for_task(task_id, ...)`, `latest(task_id)` (as `runspool.persistence.artifact_log.ArtifactLog`) | a step that returns `artifacts` fails; `runspool artifacts` lists nothing |
+| External steps | `store.items` (as `runspool.persistence.work_items.WorkItems`: listing, `claim`, `release`, and the `opener` / `submitter` / `closer` / `canceller` hooks), and `repo.transition(..., also=hook)` running the hook in the transition's own transaction | an external step fails; `runspool items` cannot be used |
+| Child tasks | `repo.spawner`, `repo.result_writer` and `repo.prepare_updates` (hooks run by `transition(..., also=)` in the same transaction), and `repo.list_children` to read them | a step that spawns fails ("the active store cannot spawn child tasks") |
+| Event cursor | `store.log.since(cursor, *, task_id=None, limit=500)`, events with an id above `cursor`, oldest first | `runspool events` fails |
+
+The executor lock is a file next to the configured `database_path`, whatever
+the store keeps its data in.
+
+This table is not a complete list of what a store must do. The conformance
+suite, `runspool.testing.StoreContract`, is the reference: run it against your
+store. In 0.3.0 the suite checks only the surface that 0.2 stores already had
+(tasks, claims, transitions, events, step runs). It does not check the
+interfaces above yet, so until it does, the SQLite implementation in
+`runspool.persistence` is the reference for them.
 
 ### After upgrading
 

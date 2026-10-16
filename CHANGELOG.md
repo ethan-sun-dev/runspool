@@ -121,8 +121,10 @@ Upgrading from 0.2.x: read "Breaking" below and
 - Schema versions 4, 5 and 6, each adding one table and leaving existing
   tables and rows untouched: `artifacts` (v4), `work_items` (v5) and
   `task_spawns` (v6, which step run of a parent spawned which child, and its
-  key). A database from 0.1.x or 0.2.x is upgraded in place the first time
-  0.3.0 opens it (see "Breaking" and [docs/upgrading.md](docs/upgrading.md)).
+  key). A database from 0.2.x (v3) or 0.1.x is upgraded in place the first
+  time 0.3.0 opens it; a 0.1.x database first gets the columns that versions
+  1–3 add to its existing tables (see "Breaking" and
+  [docs/upgrading.md](docs/upgrading.md)).
 
 ### Changed
 - Contracts are checked against the steps registered when the runtime started
@@ -200,11 +202,15 @@ Upgrading from 0.2.x: read "Breaking" below and
   plugin outside its declared range: `runspool-wechat` 0.2.0 among them. Use
   `runspool-wechat` 0.2.1, ask a plugin's author for a release that accepts
   0.3, or exempt an exact version in the profile (`allow: [name@version]`).
-- **Custom stores** (replacing the `store` seam): `TaskRepository.transition`
-  takes an optional `also=` keyword, and external steps and child tasks need
-  the store's `items` and `spawner`. A store without them keeps working until
-  a workflow uses an external step or spawns, which then fails with a clear
-  error.
+- **Custom stores** (replacing the `store` seam) need more for each new
+  feature: recorded artifacts need `store.artifacts`; external steps need
+  `store.items` and `repo.transition(..., also=)`; child tasks need
+  `repo.spawner`, `repo.result_writer` and `repo.prepare_updates`; and
+  `runspool events` needs `store.log.since`. A store without one keeps working
+  until that feature is used, which then fails with an error. This is not a
+  complete list: see [docs/upgrading.md](docs/upgrading.md#custom-stores) and
+  run `runspool.testing.StoreContract`, which does not check these new
+  interfaces yet.
 
 ### Fixed
 - Crash recovery runs only in the lock holder, so a second process no longer

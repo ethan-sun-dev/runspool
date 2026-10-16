@@ -504,3 +504,58 @@ def test_version_prints_the_installed_version_without_a_config(tmp_path, monkeyp
         check=False,
     )
     assert (done.returncode, done.stdout) == (0, f"runspool {runspool.__version__}\n")
+
+
+MARKER_PLUGIN = """
+from pathlib import Path
+
+
+def apply(ctx, config):
+    Path(__file__).with_name("applied.marker").write_text("applied", encoding="utf-8")
+"""
+
+
+def test_version_never_boots_the_profile_or_touches_the_database(tmp_path):
+    """``--version`` answers before the profile is loaded: an old database is not
+    migrated (that cannot be undone), no workspace is created, no plugin applies."""
+    import hashlib
+    import os
+    import sqlite3
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import runspool
+
+    fixture = Path(__file__).parent / "persistence" / "fixtures" / "v3_runspool_0_2_2.sql"
+    (tmp_path / "ws").mkdir()
+    db = tmp_path / "ws" / "runspool.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(fixture.read_text(encoding="utf-8"))
+    conn.close()
+    before = hashlib.sha256(db.read_bytes()).hexdigest()
+    (tmp_path / "marker_plugin.py").write_text(MARKER_PLUGIN, encoding="utf-8")
+    patch = '[{"insert": [{"id": "marker", "plugin": "marker_plugin:apply"}]}]'
+    for name, root in (("old.yaml", "./ws"), ("new.yaml", "./新 工作区")):
+        profile = f"workspace_root: {root}\npatch: {patch}\n"
+        (tmp_path / name).write_text(profile, encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(tmp_path), *sys.path])}
+    main = "import sys; from runspool.cli import main; sys.argv[0] = 'runspool'; main()"
+    for args in (["-c", "old.yaml", "--version"], ["--version", "-c", "new.yaml"]):
+        done = subprocess.run(
+            [sys.executable, "-c", main, *args],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+            check=False,
+        )
+        assert (done.returncode, done.stdout) == (0, f"runspool {runspool.__version__}\n")
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == before
+    assert not (tmp_path / "ws" / "runspool.db-wal").exists()
+    with sqlite3.connect(db) as conn:
+        version = conn.execute("select value from schema_meta where key = 'version'").fetchone()
+    conn.close()
+    assert version == ("3",)
+    assert not (tmp_path / "新 工作区").exists()
+    assert not (tmp_path / "applied.marker").exists()
