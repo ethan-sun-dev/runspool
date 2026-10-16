@@ -255,11 +255,17 @@ class Fanout(Step):
 
 **Created with the step.** When the step succeeds (also when it is `degraded`),
 the children are created in the same database transaction that advances the
-parent. A crash leaves either both (the parent moved on and its children exist)
-or neither (the step runs again and spawns them then), so a re-run after a crash
-never creates duplicates, and a stale worker whose claim was taken back spawns
-nothing. Nothing is spawned when the step fails or defers, or when a terminate
-request ends the task at that boundary; a pause at the boundary does not stop it.
+parent, and so is the rest of that step's result: its `updates` and the end of
+its step run (`ok` / `degraded`). A crash leaves either all of it (the parent
+moved on, its children exist, its updates are written) or none of it (the run is
+recovered as interrupted and the step runs again), so a re-run after a crash
+never creates duplicates and never sees an update from the attempt that did not
+complete (a `when` that reads one still runs the step). A stale worker whose
+claim was taken back writes nothing of it. Nothing is spawned when the step fails
+or defers, or when a terminate request ends the task at that boundary (its
+updates are still written then, as for any step); a pause at the boundary does
+not stop it. Artifacts are recorded before, tied to the run, and only listed once
+that run has ended `ok` or `degraded`.
 
 **Independent tasks.** Each child is a task of its own, queued on the first step
 of its workflow, with `parent_task_id` set to the parent and the configured
@@ -281,9 +287,12 @@ every entry a `ChildTask` with a non-empty `input`, a defined `workflow`, a stri
 `name`, a `metadata` that can be stored as a JSON object (string keys: it is
 stored with its keys sorted, and checked the same way) and a non-empty `key` used
 once. A spawn that does not validate fails the step (the error names the child by
-position, never its input) and nothing is created. If the store still cannot
-write the children, the transaction rolls back and the step fails rather than
-leaving the task running. An external step's validator may return
+position, never its input) and nothing is created. Text must also be valid UTF-8
+(a lone surrogate, as decoded JSON can contain, is refused). If the store still
+fails while writing the transaction, it rolls back (no child, no update) and the
+step fails rather than leaving the task running. If the transaction committed
+and only reading the task back afterwards fails, nothing is undone: the failure
+is reported, and the committed run, children and artifacts stay as they are. An external step's validator may return
 a spawn too: the children are created when the submission is accepted.
 
 ## External steps
