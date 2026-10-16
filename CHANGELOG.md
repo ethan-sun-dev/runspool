@@ -92,8 +92,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not wait for them. A `key` names a child within its parent: running the step
   again (after `set-step`) does not create that child a second time. Nothing is
   spawned when the step fails or defers, or when its boundary terminates the
-  task; a spawn that does not validate (unknown workflow, a key used twice,
-  metadata that is not a JSON object) fails the step and creates nothing. An
+  task; a spawn that does not validate (not a list or tuple, even if empty or
+  falsy; an unknown workflow; a key used twice; metadata that cannot be stored
+  as a JSON object with sorted keys) fails the step before any of its result is
+  written, and creates nothing. An
   accepted external step submission may spawn children too.
 - Schema version 6: adds the `task_spawns` table (which step run of a parent
   spawned which child, and its key). Existing tables are unchanged; databases

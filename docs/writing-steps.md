@@ -274,11 +274,16 @@ step succeeds. Each spawn is recorded (which step run of the parent spawned whic
 child, and its key), and the parent gets a `children_spawned` event listing the
 ids created and those already spawned.
 
-**Validation.** The spawn is checked before anything of the result is written:
-every entry must be a `ChildTask` with a non-empty `input`, a defined `workflow`,
-a string `name`, a JSON-object `metadata` and a non-empty `key` used once. A spawn
-that does not validate fails the step (the error names the child by position,
-never its input) and nothing is created. An external step's validator may return
+**Validation.** The spawn is checked before anything of the result is written
+(artifacts, updates): it must be a list or tuple (an empty one spawns nothing;
+anything else fails, even an empty or falsy value such as `{}`, `0` or `""`), and
+every entry a `ChildTask` with a non-empty `input`, a defined `workflow`, a string
+`name`, a `metadata` that can be stored as a JSON object (string keys: it is
+stored with its keys sorted, and checked the same way) and a non-empty `key` used
+once. A spawn that does not validate fails the step (the error names the child by
+position, never its input) and nothing is created. If the store still cannot
+write the children, the transaction rolls back and the step fails rather than
+leaving the task running. An external step's validator may return
 a spawn too: the children are created when the submission is accepted.
 
 ## External steps
