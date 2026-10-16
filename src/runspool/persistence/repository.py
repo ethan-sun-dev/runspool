@@ -76,6 +76,32 @@ class TaskRepository:
                 insert_event(conn, task_id, event)
             return task_id
 
+    def prepare_updates(self, fields: Mapping[str, Any]) -> dict[str, Any]:
+        """See :func:`prepare_updates`: what update_fields would write, checked."""
+        return prepare_updates(fields)
+
+    def result_writer(self, task_id: int, plan: Any) -> Callable[[sqlite3.Connection], None]:
+        """A hook writing a spawning step's result inside its transition: the
+        result's ``updates`` (prepared by :func:`prepare_updates`) and the closing of
+        its step run. They are applied only together with the transition (which
+        already required the claim token), never left behind by one that fails."""
+
+        def hook(conn: sqlite3.Connection) -> None:
+            if plan.updates:
+                assignments = ", ".join(f"{col} = ?" for col in plan.updates)
+                conn.execute(
+                    f"update tasks set {assignments}, updated_at = datetime('now') where id = ?",
+                    [*plan.updates.values(), task_id],
+                )
+            if plan.step_run_id is not None:
+                conn.execute(
+                    "update step_runs set status = ?, finished_at = datetime('now'), "
+                    "duration_ms = ?, note = ? where id = ? and status = 'running'",
+                    (plan.run_status, plan.duration_ms, plan.note, plan.step_run_id),
+                )
+
+        return hook
+
     def spawner(self, parent_task_id: int, plan: Any) -> Callable[[sqlite3.Connection], None]:
         """A hook creating the children of ``plan`` (a SpawnPlan) inside the parent's
         transition, with their "created" events, a ``task_spawns`` row each and a
@@ -343,13 +369,9 @@ class TaskRepository:
         # the repository does pure CRUD only.
         if not fields:
             return False
-        bad = set(fields) - UPDATABLE_COLUMNS
-        if bad:
-            lifecycle = sorted(bad & LIFECYCLE_COLUMNS)
-            hint = f" ({', '.join(lifecycle)}: use the state machine)" if lifecycle else ""
-            raise ValueError(f"columns not updatable: {sorted(bad)}{hint}")
-        assignments = ", ".join(f"{col} = ?" for col in fields)
-        values = [_dump(v) if col == "metadata" else v for col, v in fields.items()]
+        prepared = prepare_updates(fields)
+        assignments = ", ".join(f"{col} = ?" for col in prepared)
+        values = list(prepared.values())
         values.append(task_id)
         where = "id = ?"
         if token is not None:
@@ -370,6 +392,17 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if "metadata" in task:
         task["metadata"] = json.loads(task["metadata"]) if task["metadata"] else {}
     return task
+
+
+def prepare_updates(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """``fields`` as update_fields writes them: only non-lifecycle columns, with
+    metadata serialized. Raises ValueError for any other column."""
+    bad = set(fields) - UPDATABLE_COLUMNS
+    if bad:
+        lifecycle = sorted(bad & LIFECYCLE_COLUMNS)
+        hint = f" ({', '.join(lifecycle)}: use the state machine)" if lifecycle else ""
+        raise ValueError(f"columns not updatable: {sorted(bad)}{hint}")
+    return {col: _dump(v) if col == "metadata" else v for col, v in fields.items()}
 
 
 def dump_metadata(metadata: Any) -> str | None:

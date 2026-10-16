@@ -19,27 +19,41 @@ from runspool.models import TaskStatus
 from runspool.runtime import run_until_idle
 
 STEPS = """
+from runspool.engine.artifacts import Artifact
 from runspool.engine.children import ChildTask
 from runspool.engine.external import ExternalStep
 from runspool.engine.step import Step, StepDeferred, StepResult
 
 # children: what fanout spawns, as ChildTask keyword arguments; hook: called with
 # the task while fanout runs (a test's way to act mid-step).
-STATE = {"children": [], "degraded": False, "hook": None, "fail_gate": False, "updates": {}}
+STATE = {
+    "children": [],
+    "degraded": False,
+    "hook": None,
+    "fail_gate": False,
+    "updates": {},
+    "skip_when_done": False,  # fanout's when(): skip once metadata.spawn_done is set
+    "artifact": False,  # fanout records a "plan" artifact
+}
 
 
 class Fanout(Step):
     name = "fanout"
 
+    def when(self, task, config):
+        return not (STATE["skip_when_done"] and (task["metadata"] or {}).get("spawn_done"))
+
     def run(self, ctx):
         if STATE["hook"] is not None:
             STATE["hook"](ctx.task)
         children = [ChildTask(**c) for c in STATE["children"]]
+        artifacts = [Artifact("plan", "计划/plan.md", "ab" * 32)] if STATE["artifact"] else []
         return StepResult(
             message="planned",
             spawn=children,
             degraded=STATE["degraded"],
             updates=STATE["updates"],
+            artifacts=artifacts,
         )
 
 
@@ -146,7 +160,7 @@ def test_a_step_spawns_independent_children_with_its_transition(ws):
     run_until_idle(ctx, notifier=lambda m: None)
 
     parent = ctx.repo.get_task(pid)
-    assert parent["task_status"] == TaskStatus.COMPLETED  # it does not wait for its children
+    assert parent["task_status"] == TaskStatus.COMPLETED, parent["last_error"]  # no waiting
     first, second = ctx.repo.list_children(pid)
     assert (first["workflow"], first["name"], first["metadata"]) == (
         "unit",
@@ -209,7 +223,10 @@ import sys
 
 mode, profile, module = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, os.path.dirname(os.path.dirname(profile)))
-__import__(module).STATE["children"] = {children}
+state = __import__(module).STATE
+state["children"] = {children}
+state["updates"] = {"metadata": {"spawn_done": True}}
+state["skip_when_done"] = True
 
 from runspool.app import load_context
 from runspool.persistence.repository import TaskRepository
@@ -532,3 +549,123 @@ def test_a_store_error_while_creating_children_fails_the_step_not_leaves_it_runn
     (run,) = [r for r in ctx.step_runs.list_for_task(pid) if r["step"] == "fanout"]
     assert run["status"] == "failed"
     assert ctx.repo.list_children(pid) == [] and _spawns(ctx, pid) == []
+
+
+# -- a spawn's result is written with its transition, all or nothing -----------------
+
+
+def _break_spawner(monkeypatch):
+    from runspool.persistence.repository import TaskRepository
+
+    real = TaskRepository.spawner
+
+    def broken(self, parent, plan):
+        hook = real(self, parent, plan)
+
+        def failing(conn):
+            hook(conn)
+            raise sqlite3.IntegrityError("simulated")
+
+        return failing
+
+    monkeypatch.setattr(TaskRepository, "spawner", broken)
+
+
+def test_a_failed_spawn_keeps_no_update_so_a_retry_still_spawns(ws, monkeypatch):
+    """A marker the step's when() reads must not survive a spawn that failed:
+    otherwise the retry skips the step and the children are never created."""
+    ctx, _, _, state = ws
+    state["updates"] = {"metadata": {"spawn_done": True}}
+    state["skip_when_done"] = True
+    _break_spawner(monkeypatch)
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    task = ctx.repo.get_task(pid)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert task["metadata"] == {}  # the update went with the failed transaction
+
+    monkeypatch.undo()
+    commands.retry_task(ctx, pid)
+    run_until_idle(ctx, notifier=lambda m: None)
+    task = ctx.repo.get_task(pid)
+    assert task["task_status"] == TaskStatus.COMPLETED
+    assert task["metadata"] == {"spawn_done": True}
+    assert len(ctx.repo.list_children(pid)) == 2
+
+
+def test_a_crash_inside_the_transaction_keeps_no_update_either(ws):
+    ctx, path, _, _ = ws
+    pid = _parent(ctx)
+    _run_crashing(path, "inside")  # the script sets the spawn_done update and when()
+    after = load_context(path)
+    task = after.repo.get_task(pid)
+    assert task["metadata"] == {}
+    (run,) = after.step_runs.list_for_task(pid)
+    assert run["status"] == "running"  # not "ok": the run is closed with the transition
+    state = __import__(next(p.stem for p in path.parent.parent.glob("child_steps_*.py"))).STATE
+    state["updates"] = {"metadata": {"spawn_done": True}}
+    state["skip_when_done"] = True
+    run_until_idle(after, notifier=lambda m: None)
+    assert len(after.repo.list_children(pid)) == 2
+    assert after.repo.get_task(pid)["metadata"] == {"spawn_done": True}
+    statuses = [r["status"] for r in after.step_runs.list_for_task(pid) if r["step"] == "fanout"]
+    assert statuses == ["interrupted", "ok"]
+
+
+def test_a_failed_read_after_the_commit_does_not_rewrite_the_committed_run(ws, monkeypatch):
+    from runspool.persistence.repository import TaskRepository
+
+    ctx, _, _, state = ws
+    state["artifact"] = True
+    real_transition, real_get = TaskRepository.transition, TaskRepository.get_task
+    flags = {"armed": True, "committed": False}
+
+    def transition(self, *args, **kwargs):
+        applied = real_transition(self, *args, **kwargs)
+        if applied and kwargs.get("also") is not None and flags["armed"]:
+            flags["armed"] = False
+            flags["committed"] = True  # the spawning transition has just committed
+        return applied
+
+    def get_task(self, task_id):
+        if flags["committed"]:
+            flags["committed"] = False
+            raise sqlite3.OperationalError("simulated read failure")
+        return real_get(self, task_id)
+
+    monkeypatch.setattr(TaskRepository, "transition", transition)
+    monkeypatch.setattr(TaskRepository, "get_task", get_task)
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    monkeypatch.undo()
+    (run,) = [r for r in ctx.step_runs.list_for_task(pid) if r["step"] == "fanout"]
+    assert run["status"] == "ok" and run["error"] is None
+    assert len(ctx.repo.list_children(pid)) == 2
+    (artifact,) = ctx.service("store").artifacts.latest(pid)
+    assert artifact["type"] == "plan" and artifact["step_run_id"] == run["id"]
+    assert ctx.repo.get_task(pid)["task_status"] == TaskStatus.COMPLETED
+
+
+def test_metadata_that_utf8_cannot_encode_is_refused_before_anything_is_written(ws):
+    ctx, _, _, state = ws
+    state["children"] = [
+        {"input": "/私密/稿件.md", "workflow": "unit", "metadata": {"x": "\ud800"}}
+    ]
+    state["updates"] = {"metadata": {"seen": True}}
+    state["artifact"] = True
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    _assert_failed_cleanly(ctx, pid, "child 1: metadata must be a JSON object")
+    store = ctx.service("store")
+    assert store.artifacts.list_for_task(pid, include_unfinished=True) == []
+
+
+@pytest.mark.parametrize("field", ["input", "name", "key"])
+def test_text_that_utf8_cannot_encode_is_refused_before_anything_is_written(ws, field):
+    ctx, _, _, state = ws
+    child = {"input": "/私密/稿件.md", "workflow": "unit", field: "坏\ud800"}
+    state["children"] = [child]
+    state["updates"] = {"metadata": {"seen": True}}
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    _assert_failed_cleanly(ctx, pid, f"child 1: {field}")

@@ -149,6 +149,11 @@ class Rejected:
 Outcome = Succeeded | Deferred | Failed | Denied | NeedsApproval | AwaitsExternal | Rejected
 
 
+class TransitionCommitted(RuntimeError):
+    """A transition was committed, but the task could not be read back afterwards.
+    Nothing must be undone or rewritten: the change is in the database."""
+
+
 class IllegalTransition(Exception):
     """A user-initiated control action is not valid for the task's current state.
 
@@ -310,11 +315,38 @@ class StateMachine:
                 events=events,
                 also=chain(
                     self._item_change(task, outcome, fields),
+                    self._result_change(task, outcome),
                     self._spawn_change(task, outcome, fields),
                 ),
             ):
-                return self.repo.get_task(task_id)
+                return self._read_back(task_id)
         return self.repo.get_task(task_id)
+
+    def _read_back(self, task_id: int) -> dict[str, Any] | None:
+        """The task after a committed transition; raises TransitionCommitted if it
+        cannot be read (after a few tries), so no caller mistakes it for a rollback."""
+        error: Exception | None = None
+        for _ in range(3):
+            try:
+                return self.repo.get_task(task_id)
+            except Exception as exc:  # noqa: BLE001 - reported as committed, below
+                error = exc
+        raise TransitionCommitted(
+            f"task {task_id}: transition committed, but reading it back failed "
+            f"({type(error).__name__})"
+        ) from error
+
+    def _result_change(
+        self, task: dict[str, Any], outcome: Outcome
+    ) -> Callable[[Any], None] | None:
+        """A spawning step's updates and step run end, written with its transition
+        (whatever it is, a terminate included)."""
+        if not isinstance(outcome, Succeeded) or outcome.spawn is None:
+            return None
+        writer = getattr(self.repo, "result_writer", None)
+        if writer is None:
+            raise RuntimeError("the active store cannot spawn child tasks")
+        return writer(task["id"], outcome.spawn)
 
     def _item_change(
         self, task: dict[str, Any], outcome: Outcome, fields: dict[str, Any]

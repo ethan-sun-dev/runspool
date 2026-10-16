@@ -54,13 +54,27 @@ class PlannedChild:
 
 
 class SpawnPlan:
-    """The children a successful step creates; ``created`` / ``existing`` are filled
-    with task ids when they are written (``existing``: keys spawned before)."""
+    """The children a successful step creates, and the rest of its result that is
+    written with them in one transaction: ``updates`` (as prepared for the store)
+    and how its step run ends (``run_status``, ``duration_ms``, ``note``).
+    ``created`` / ``existing`` are filled with task ids when the children are
+    written (``existing``: keys spawned before)."""
 
-    def __init__(self, children: Sequence[PlannedChild], *, step: str, step_run_id: int | None):
+    def __init__(
+        self,
+        children: Sequence[PlannedChild],
+        *,
+        step: str,
+        step_run_id: int | None,
+        updates: Mapping[str, Any] | None = None,
+    ):
         self.children = tuple(children)
         self.step = step
         self.step_run_id = step_run_id
+        self.updates = dict(updates or {})
+        self.run_status = "ok"
+        self.duration_ms: int | None = None
+        self.note: str | None = None
         self.created: list[int] = []
         self.existing: list[int] = []
 
@@ -80,26 +94,33 @@ def plan_children(spawn: Sequence[Any], config: Any) -> tuple[PlannedChild, ...]
             raise ValueError(f"{where}: not a ChildTask")
         if not isinstance(child.input, str) or not child.input:
             raise ValueError(f"{where}: input must be a non-empty string")
+        _utf8(where, "input", child.input)
         if not isinstance(child.workflow, str):
             raise ValueError(f"{where}: workflow must be a string")
         try:
             workflow = config.workflow(child.workflow)
         except KeyError:
             raise ValueError(f"{where}: workflow {child.workflow!r} is not defined") from None
-        if child.name is not None and not isinstance(child.name, str):
-            raise ValueError(f"{where}: name must be a string")
+        if child.name is not None:
+            if not isinstance(child.name, str):
+                raise ValueError(f"{where}: name must be a string")
+            _utf8(where, "name", child.name)
         metadata = metadata_json = None
         if child.metadata is not None:
             if not isinstance(child.metadata, Mapping):
                 raise ValueError(f"{where}: metadata must be a JSON object")
             metadata = dict(child.metadata)
-            try:  # the very serialization the store uses (keys sorted, so all strings)
-                metadata_json = dump_metadata(metadata)
-            except (TypeError, ValueError):
-                raise ValueError(f"{where}: metadata must be a JSON object") from None
+            try:  # the very serialization the store uses (keys sorted, so all strings),
+                metadata_json = dump_metadata(metadata)  # as text SQLite can store
+                metadata_json.encode("utf-8")
+            except (TypeError, ValueError):  # UnicodeEncodeError is a ValueError
+                raise ValueError(
+                    f"{where}: metadata must be a JSON object of valid UTF-8 text"
+                ) from None
         if child.key is not None:
             if not isinstance(child.key, str) or not child.key:
                 raise ValueError(f"{where}: key must be a non-empty string")
+            _utf8(where, "key", child.key)
             if child.key in keys:
                 raise ValueError(f"{where}: key {child.key!r} is used twice")
             keys.add(child.key)
@@ -116,3 +137,11 @@ def plan_children(spawn: Sequence[Any], config: Any) -> tuple[PlannedChild, ...]
             )
         )
     return tuple(planned)
+
+
+def _utf8(where: str, field: str, text: str) -> None:
+    """Text SQLite stores as UTF-8: a lone surrogate (from decoded JSON, say) is not."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"{where}: {field} must be valid UTF-8 text") from None

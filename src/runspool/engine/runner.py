@@ -32,6 +32,7 @@ from runspool.persistence.state_machine import (
     Rejected,
     StateMachine,
     Succeeded,
+    TransitionCommitted,
 )
 from runspool.persistence.step_run_log import StepRunLog
 
@@ -191,12 +192,18 @@ class TaskRunner:
             # fails the step, and nothing is created.
             children = plan_children(result.spawn, self.config)
             if children:
-                if getattr(self.repo, "spawner", None) is None:
+                if not all(
+                    callable(getattr(self.repo, name, None))
+                    for name in ("spawner", "result_writer", "prepare_updates")
+                ):
                     raise RuntimeError("the active store cannot spawn child tasks")
-                spawn = SpawnPlan(children, step=task["step"], step_run_id=run_id)
+                # A spawning step's updates are written with its transition (see
+                # below), so they are checked now and never left behind on failure.
+                updates = self.repo.prepare_updates(result.updates) if result.updates else {}
+                spawn = SpawnPlan(children, step=task["step"], step_run_id=run_id, updates=updates)
             if result.artifacts:
                 self._record_artifacts(task, step, run_id, result.artifacts)
-            if result.updates:
+            if result.updates and spawn is None:
                 self.repo.update_fields(task_id, result.updates, token=claim_token)
         except SubmissionRejected as rejected:
             if item is None:  # not a validator: an ordinary failure
@@ -234,12 +241,15 @@ class TaskRunner:
         except Exception as exc:  # noqa: BLE001 - any step failure becomes task failure
             self._fail(sm, task, run_id, t0, claim_token, f"{type(exc).__name__}: {exc}")
             return
-        self.step_runs.finish(
-            run_id,
-            status="degraded" if result.degraded else "ok",
-            duration_ms=_ms_since(t0),
-            note=result.message or None,
-        )
+        run_status = "degraded" if result.degraded else "ok"
+        if spawn is None:
+            self.step_runs.finish(
+                run_id, status=run_status, duration_ms=_ms_since(t0), note=result.message or None
+            )
+        else:  # closed with the transition, together with the updates and children
+            spawn.run_status = run_status
+            spawn.duration_ms = _ms_since(t0)
+            spawn.note = result.message or None
         outcome = (
             Succeeded(result.degraded)
             if item is None
@@ -249,10 +259,15 @@ class TaskRunner:
             outcome = replace(outcome, step_run_id=run_id, spawn=spawn)
             try:
                 after = sm.finish_step(task_id, outcome, token=claim_token)
-            except Exception as exc:  # noqa: BLE001 - the children could not be written
-                # The transaction rolled back (no child, the parent not advanced): fail
-                # the step instead of leaving the task running. Its updates and
-                # artifacts were already written, as for any step that fails late.
+            except TransitionCommitted as exc:
+                # Committed (parent advanced, children, updates, run closed): only the
+                # read afterwards failed. Report it; never rewrite what was committed.
+                self._notify(task, f"step {task['step']} done; {exc}")
+                return
+            except Exception as exc:  # noqa: BLE001 - the transaction did not commit
+                # Rolled back: no child, no update, the parent not advanced and its run
+                # still open. Fail the step instead of leaving the task running (its
+                # artifacts stay hidden: they belong to a run that did not succeed).
                 self._fail(
                     sm,
                     task,
