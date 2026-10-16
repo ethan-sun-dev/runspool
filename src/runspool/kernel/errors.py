@@ -26,6 +26,11 @@ class InactiveEffectError(KernelError):
     """An effect (registration) was attempted on a fiber that is not live."""
 
 
+class PluginChangeRefused(KernelError):
+    """A change to the loaded plugins (load, reload, unload) was refused by the
+    kernel's change guard (see :meth:`Kernel.guard_changes`). Nothing was changed."""
+
+
 class ComposeError(KernelError):
     """A patch layer is malformed or contradicts the entries it applies to."""
 

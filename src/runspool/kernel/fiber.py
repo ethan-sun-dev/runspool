@@ -24,6 +24,12 @@ first, while the provider's services are still in place.
 Disposing a fiber that is mid-transition (from inside its own ``apply``, or from a
 disposer while it unloads) is deferred until the transition ends, never lost.
 
+An application may forbid changes to the loaded plugins once it has started
+(:meth:`Kernel.guard_changes`): loading, reloading or unloading a plugin, and
+providing or withdrawing a service, are then checked first and refused with
+:class:`PluginChangeRefused` before anything changes. Shutting the kernel down is
+never refused.
+
 The kernel is synchronous and single-threaded for lifecycle changes.
 
 Lifecycle and epoch-based dependency algorithm adapted from Cordis
@@ -34,7 +40,8 @@ from __future__ import annotations
 
 import itertools
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -42,6 +49,7 @@ from typing import Any
 from runspool.kernel.errors import (
     InactiveEffectError,
     KernelError,
+    PluginChangeRefused,
     ServiceConflict,
     ServiceNotInjected,
 )
@@ -195,10 +203,11 @@ class Fiber:
         """Unload (if loaded) and load again; also retries a FAILED fiber."""
         if self._disposed or self._phase is not None:
             return
-        if self._loaded_epoch is not None:
-            self._unload()
-        self._failed_epoch = None
-        self._reconcile()
+        with self._kernel._change(f"reload plugin {self.name!r}"):
+            if self._loaded_epoch is not None:
+                self._unload()
+            self._failed_epoch = None
+            self._reconcile()
 
     def dispose(self) -> None:
         """Unload and permanently remove this fiber (and every child plugin).
@@ -208,14 +217,15 @@ class Fiber:
         """
         if self._disposed:
             return
-        if self._phase is not None:
-            self._dispose_requested = True
-            return
-        if self._loaded_epoch is not None:
-            self._unload()  # finalizes the dispose itself if one is requested meanwhile
-            if self._disposed:
+        with self._kernel._change(f"unload plugin {self.name!r}"):
+            if self._phase is not None:
+                self._dispose_requested = True
                 return
-        self._finalize_dispose()
+            if self._loaded_epoch is not None:
+                self._unload()  # finalizes the dispose itself if one is requested meanwhile
+                if self._disposed:
+                    return
+            self._finalize_dispose()
 
     def _finalize_dispose(self) -> None:
         if self._disposed:
@@ -396,6 +406,12 @@ class Context:
     def effect(self, body: Callable[[], Any], label: str = "effect") -> Disposer:
         return self.fiber.effect(body, label)
 
+    def check_change(self, what: str) -> None:
+        """Raise :class:`PluginChangeRefused` if the kernel's change guard refuses
+        ``what`` (see :meth:`Kernel.guard_changes`). For services whose registrations
+        must not change once the application has started."""
+        self._kernel._check_change(what)
+
     def on(self, event: str, callback: Callable[..., Any], *, prepend: bool = False) -> Disposer:
         return self._kernel.events.on(self.fiber, event, callback, prepend=prepend)
 
@@ -421,6 +437,9 @@ class Kernel:
         self.root_fiber = Fiber(self, None, normalize(lambda ctx, config: None), None, "root")
         self.root_fiber._loaded_epoch = ""  # the root is always active
         self.root = self.root_fiber.ctx
+        self._change_guard: Callable[[str], str | None] | None = None
+        self._closing = False
+        self._changing = 0  # depth of allowed changes in progress
 
     @property
     def fibers(self) -> list[Fiber]:
@@ -428,13 +447,49 @@ class Kernel:
         return list(self._fibers)
 
     def dispose(self) -> None:
-        """Unload every plugin, newest first. Plugins still loading finish, then go."""
+        """Unload every plugin, newest first. Plugins still loading finish, then go.
+        Never refused by the change guard."""
         root = self.root_fiber
         root._phase = FiberState.UNLOADING
+        self._closing = True
         try:
             root._run_disposers()
         finally:
             root._phase = None
+            self._closing = False
+
+    def guard_changes(self, guard: Callable[[str], str | None]) -> None:
+        """From now on, check every change to the loaded plugins first: ``guard(what)``
+        gets a description of the change and returns a reason to refuse it, or
+        ``None`` to allow it. A refused change raises :class:`PluginChangeRefused`
+        before anything is changed. A guard that raises refuses the change. Applies
+        to loading, reloading and unloading plugins and to providing or withdrawing
+        services (and to anything a service checks with :meth:`Context.check_change`);
+        not to :meth:`dispose`. Replaces an earlier guard."""
+        self._change_guard = guard
+
+    @contextmanager
+    def _change(self, what: str) -> Iterator[None]:
+        """Check ``what`` with the change guard, then let it run. What it sets off
+        (unloading dependents, a plugin's ``apply``) belongs to the same change and
+        is not checked again: it was allowed as a whole."""
+        self._check_change(what)
+        self._changing += 1
+        try:
+            yield
+        finally:
+            self._changing -= 1
+
+    def _check_change(self, what: str) -> None:
+        guard = self._change_guard
+        if guard is None or self._closing or self._changing:
+            return
+        try:
+            reason = guard(what)
+        except Exception as exc:  # noqa: BLE001 - a guard that cannot decide refuses
+            reason = f"the change guard failed ({type(exc).__name__})"
+        if reason:
+            raise PluginChangeRefused(f"cannot {what}: {reason}")
 
     # -- internals used by Fiber / Context ----------------------------------------
 
@@ -444,10 +499,13 @@ class Kernel:
                 f"plugin {parent.name!r} is {parent.state.value}; it cannot load child plugins"
             )
         spec = normalize(plugin)
-        child = Fiber(self, parent, spec, config, name or spec.name)
-        self._fibers.append(child)
-        child._parent_effect = parent.effect(lambda: child.dispose, label=f"plugin:{child.name}")
-        child._reconcile()
+        with self._change(f"load plugin {name or spec.name!r}"):
+            child = Fiber(self, parent, spec, config, name or spec.name)
+            self._fibers.append(child)
+            child._parent_effect = parent.effect(
+                lambda: child.dispose, label=f"plugin:{child.name}"
+            )
+            child._reconcile()
         return child
 
     def _provide(self, fiber: Fiber, name: str, value: Any) -> Disposer:
@@ -470,10 +528,16 @@ class Kernel:
 
             return unregister
 
-        undo = fiber.effect(register, label=f"provide:{name}")
-        # Notify only once the registration is recorded, so a dependent that tears the
-        # provider down in response also tears this service down.
-        self._notify({name})
+        with self._change(f"provide service {name!r}"):
+            effect = fiber.effect(register, label=f"provide:{name}")
+            # Notify only once the registration is recorded, so a dependent that tears
+            # the provider down in response also tears this service down.
+            self._notify({name})
+
+        def undo() -> None:
+            with self._change(f"withdraw service {name!r}"):
+                effect()
+
         return undo
 
     def _usable(self, name: str, consumer: Fiber) -> bool:
