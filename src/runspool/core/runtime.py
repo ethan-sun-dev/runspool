@@ -191,6 +191,15 @@ class RuntimeService:
             fix()
 
     def build_coordinator(self, *, notifier: Callable[[str], None] | None = None) -> Coordinator:
+        """A coordinator (task runner + worker pool) that executes steps. Like every
+        way to start executing, it first passes :meth:`ensure_ready` (which refuses
+        while plugins are loading, and fixes the plugin set), so nothing executes
+        steps from a plugin set that is still changing."""
+        self.ensure_ready()
+        return self._build_coordinator(notifier=notifier)
+
+    def _build_coordinator(self, *, notifier: Callable[[str], None] | None = None) -> Coordinator:
+        """Build without checking; callers have passed :meth:`ensure_ready`."""
         registry = self.steps.registry
         runner_kwargs: dict[str, Any] = {"notifier": notifier} if notifier is not None else {}
         if self.gate is not None:
@@ -220,7 +229,7 @@ class RuntimeService:
         ctx = self._ctx
         on_tick = (lambda tick: ctx.emit("daemon/tick", tick)) if ctx is not None else None
         return Daemon(
-            self.build_coordinator(), self.config, on_tick=on_tick, lock=self.executor_lock()
+            self._build_coordinator(), self.config, on_tick=on_tick, lock=self.executor_lock()
         )
 
     def executor_lock(self) -> ExecutorLock:
@@ -261,7 +270,7 @@ class RuntimeService:
         if not lock.acquire():
             raise lock.busy_error("cannot run")
         try:
-            coordinator = self.build_coordinator(notifier=notifier)
+            coordinator = self._build_coordinator(notifier=notifier)
             self.recover()
             total_tasks = len(self.store.repo.list_all())
             max_steps = max((len(wf.steps) for wf in self.config.workflows.values()), default=1)

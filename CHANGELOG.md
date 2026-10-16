@@ -65,7 +65,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   may still load plugins into a booted kernel before the runtime starts, but
   the runtime cannot start while plugins are still loading or unloading (from
   inside a plugin's `apply` or a disposer): it raises `StartupError` and
-  starts and fixes nothing. This
+  starts and fixes nothing. Every way to build what executes steps
+  (`build_coordinator`, `build_daemon`, `run_until_idle`) goes through this
+  same check (`ensure_ready`) first; `build_coordinator` therefore also
+  refuses a partially loaded plugin set now, like `run` and the daemon. This
   withdraws run-time plugin reloading, which 0.2 already did not support (the
   plugin set changed only at startup and shutdown): what a reloaded plugin
   would declare is only known once its old version is gone, so a reload cannot

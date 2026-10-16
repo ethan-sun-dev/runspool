@@ -1107,10 +1107,7 @@ class _NeedsMaster(_Plain):
 def test_starting_the_runtime_from_inside_a_plugin_load_is_refused(tmp_path, monkeypatch):
     ctx = _late_profile(tmp_path)
     runtime = ctx.service("runtime")
-    built = []
-    monkeypatch.setattr(
-        type(runtime), "build_coordinator", lambda self, **kw: built.append(1) or None
-    )
+    built = _count_executors(monkeypatch)
     seen = {}
 
     def late(plugin_ctx, config):
@@ -1130,7 +1127,7 @@ def test_starting_the_runtime_from_inside_a_plugin_load_is_refused(tmp_path, mon
     assert fiber.state is FiberState.ACTIVE
     assert len(seen["errors"]) == 2 and seen["unchanged"]
     assert seen["fixed"] is False and seen["guard"] is None
-    assert built == []  # no coordinator, so no executor
+    assert built == []  # no TaskRunner, no WorkerPool
     # Once loading has finished the runtime starts normally and fixes the plugin set.
     runtime.ensure_ready()
     with pytest.raises(PluginChangeRefused):
@@ -1155,6 +1152,78 @@ def test_a_daemon_started_mid_load_cannot_run_a_step_before_the_load_ends(tmp_pa
                 daemon.coordinator.pool.drain()
             finally:
                 daemon.coordinator.pool.shutdown(wait=True)
+        plugin_ctx.steps.register(_NeedsMaster())
+
+    late.inject = ["steps"]
+    ctx.kernel.root.plugin(late, name="late")
+    assert ctx.step_runs.list_for_task(tid) == []  # "start" never ran
+    daemon = ctx.service("runtime").build_daemon()
+    try:
+        assert _drive(ctx, daemon, tid) == TaskStatus.MANUAL_REQUIRED
+    finally:
+        daemon.coordinator.pool.shutdown(wait=True)
+    assert ctx.step_runs.list_for_task(tid) == []
+    assert "'consume' requires 'master'" in ctx.repo.get_task(tid)["last_error"]
+
+
+def _count_executors(monkeypatch):
+    """Record every TaskRunner / WorkerPool the runtime service creates."""
+    import runspool.core.runtime as runtime_module
+
+    made = []
+    for name in ("TaskRunner", "WorkerPool"):
+        real = getattr(runtime_module, name)
+
+        def counting(*args, _real=real, _name=name, **kwargs):
+            made.append(_name)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(runtime_module, name, counting)
+    return made
+
+
+def test_building_a_coordinator_from_inside_a_plugin_load_is_refused(tmp_path, monkeypatch):
+    ctx = _late_profile(tmp_path)
+    runtime = ctx.service("runtime")
+    made = _count_executors(monkeypatch)
+    seen = {}
+
+    def late(plugin_ctx, config):
+        plugin_ctx.steps.register(_Start())
+        before = _registered(ctx)
+        with pytest.raises(StartupError, match="still being loaded") as caught:
+            runtime.build_coordinator()
+        seen["error"] = str(caught.value)
+        seen["unchanged"] = _registered(ctx) == before
+        seen["fixed"] = ctx.service("startup")._fixed
+        plugin_ctx.steps.register(_NeedsMaster())
+
+    late.inject = ["steps"]
+    assert ctx.kernel.root.plugin(late, name="late").state is FiberState.ACTIVE
+    assert seen["error"] and seen["unchanged"] and seen["fixed"] is False
+    assert made == []  # no TaskRunner, no WorkerPool
+    coordinator = runtime.build_coordinator()  # after loading: checked, then built
+    coordinator.pool.shutdown(wait=True)
+    assert made == ["TaskRunner", "WorkerPool"]
+    assert ctx.service("startup")._fixed is True
+
+
+def test_a_coordinator_built_mid_load_cannot_run_a_step_before_the_load_ends(tmp_path):
+    ctx = _late_profile(tmp_path)
+    tid = ctx.repo.create_task(input="in", workflow="drafts", first_step="start", max_retries=0)
+
+    def late(plugin_ctx, config):
+        plugin_ctx.steps.register(_Start())
+        try:
+            coordinator = ctx.service("runtime").build_coordinator()
+        except StartupError:
+            coordinator = None
+        if coordinator is not None:
+            try:
+                coordinator.tick()
+                coordinator.pool.drain()
+            finally:
+                coordinator.pool.shutdown(wait=True)
         plugin_ctx.steps.register(_NeedsMaster())
 
     late.inject = ["steps"]

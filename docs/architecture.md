@@ -346,6 +346,8 @@ and a busy timeout.
   kernel mechanism is `Kernel.guard_changes`; RunSpool sets it in
   `RuntimeService.ensure_ready`, which refuses to start while plugins are still
   loading or unloading (`Kernel.changing`), e.g. from inside a plugin's `apply`.
+  Every public way to build what executes steps (`build_coordinator`,
+  `build_daemon`, `run_until_idle`) passes `ensure_ready` first.
 - **Isolated service instances.** One provider per service name per process; to
   run two configurations, run two processes.
 - **An async kernel.** The kernel is synchronous. Steps, and the gate in front of
