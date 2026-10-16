@@ -79,6 +79,9 @@ uv sync
 Requires Python 3.11+. Core dependencies: Typer, Pydantic, PyYAML (SQLite is in
 the standard library).
 
+Upgrading from 0.2.x? 0.3.0 upgrades your database in place and 0.2.x cannot
+open it afterwards: read [docs/upgrading.md](docs/upgrading.md) first.
+
 ## Quickstart (about 3 minutes, no setup)
 
 ```bash

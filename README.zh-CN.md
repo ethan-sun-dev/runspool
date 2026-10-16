@@ -72,6 +72,9 @@ uv sync
 
 需要 Python 3.11+。核心依赖：Typer、Pydantic、PyYAML（SQLite 来自标准库）。
 
+从 0.2.x 升级？0.3.0 会就地升级数据库，升级后 0.2.x 无法再打开它：请先阅读
+[docs/upgrading.md](docs/upgrading.md)（英文）。
+
 ## 快速上手（约 3 分钟，无需任何外部配置）
 
 ```bash

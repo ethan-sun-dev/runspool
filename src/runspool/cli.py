@@ -52,10 +52,25 @@ app = typer.Typer(
 _STATE: dict[str, Any] = {"config_path": Path(DEFAULT_CONFIG_FILENAME), "booted": None}
 
 
+def _print_version(value: bool) -> None:
+    if value:
+        from runspool import __version__
+
+        typer.echo(f"runspool {__version__}")
+        raise typer.Exit()
+
+
 @app.callback()
 def root(
     config_path: Path = typer.Option(
         Path(DEFAULT_CONFIG_FILENAME), "--config-path", "-c", help="Path to the config file."
+    ),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_print_version,
+        is_eager=True,
+        help="Show the version and exit.",
     ),
 ) -> None:
     _STATE["config_path"] = config_path

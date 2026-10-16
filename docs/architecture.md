@@ -1,7 +1,7 @@
 # Architecture
 
-RunSpool 0.2 is a small plugin kernel with everything else mounted into it as
-plugins. This page describes how it is built: the layers, the kernel, the core
+Since 0.2, RunSpool is a small plugin kernel with everything else mounted into
+it as plugins. This page describes how it is built: the layers, the kernel, the core
 services, and how the reliability invariants from 0.1 are kept now that any of
 it could be extended. [plugins.md](plugins.md) is the guide for plugin authors;
 [concepts.md](concepts.md) explains tasks, workflows and steps.
@@ -386,10 +386,10 @@ A database whose version is newer than this RunSpool supports is refused
 (`SchemaTooNew`) rather than written with an older layout. Connections use WAL
 and a busy timeout.
 
-## Not in 0.2
+## Not supported
 
-- **Hot reload.** The dependency mechanism can reload plugins, but in 0.2 the
-  plugin set changes only at startup and shutdown, and this is enforced: once
+- **Hot reload.** The dependency mechanism can reload plugins, but the plugin
+  set changes only at startup and shutdown, and this is enforced: once
   the runtime starts (`run`, the daemon), every plugin change (`fiber.restart()`,
   loading or unloading a plugin, providing or withdrawing a service,
   registering or unregistering a step) is refused with `PluginChangeRefused`

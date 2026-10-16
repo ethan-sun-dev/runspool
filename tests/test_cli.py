@@ -482,3 +482,25 @@ def test_events_follow_from_a_cursor(tmp_path):
     assert json.loads(_invoke(cfg, "events", "--task", "2", "--json").output)["events"] == []
     human = _invoke(cfg, "events")
     assert human.exit_code == 0 and "#1 task 1" in human.output
+
+
+def test_version_prints_the_installed_version_without_a_config(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    import runspool
+
+    monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert result.output == f"runspool {runspool.__version__}\n"
+    # Through the console entry point too, which boots the profile first.
+    (tmp_path / "config.yaml").write_text("workspace_root: ./ws\n", encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, "-c", "import sys; from runspool.cli import main; main()", "--version"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert (done.returncode, done.stdout) == (0, f"runspool {runspool.__version__}\n")

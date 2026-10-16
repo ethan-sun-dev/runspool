@@ -11,7 +11,7 @@ Example plugins (`plugins/runspool-example-*`) are not published.
   plugin changed *without* a version bump is silently not published: check
   `git diff vPREVIOUS -- plugins/<name>` before keeping a version. The workflow
   does fail when the release tag does not match RunSpool's own version. Plugins declare the RunSpool range
-  they support, e.g. `runspool>=0.2,<0.3`; RunSpool refuses to load a plugin outside
+  they support, e.g. `runspool>=0.2,<0.4`; RunSpool refuses to load a plugin outside
   its range (a profile can exempt an exact version with `allow`).
 - Move the `[Unreleased]` notes in `CHANGELOG.md` under the new version and date,
   and update the compare links at the bottom.

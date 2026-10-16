@@ -1,6 +1,6 @@
 # Writing plugins
 
-Everything RunSpool 0.2 does is a plugin: the store, the state machine, the
+Everything RunSpool does is a plugin: the store, the state machine, the
 scheduler, the CLI, approvals, credentials, the built-in steps. Your plugin uses
 the same mechanism; there is no back door and no second-class API. This page is
 the guide for plugin authors. [architecture.md](architecture.md) explains how the
@@ -487,7 +487,7 @@ entry-point group, and optionally a bundle under `runspool.bundles`. From
 ```toml
 [project]
 name = "runspool-wechat"
-dependencies = ["runspool>=0.2,<0.3", "markdown-it-py>=3.0"]
+dependencies = ["runspool>=0.2,<0.4", "markdown-it-py>=3.0"]
 
 [project.entry-points."runspool.plugins"]
 wechat = "runspool_wechat:plugin"
