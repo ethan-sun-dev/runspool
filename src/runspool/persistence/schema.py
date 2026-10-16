@@ -168,12 +168,37 @@ def _v5_work_items(conn: sqlite3.Connection) -> None:
     )
 
 
+def _v6_task_spawns(conn: sqlite3.Connection) -> None:
+    # task_spawns: which step (run) of a parent spawned which child task
+    # (StepResult.spawn). A non-null key names a child within its parent: spawning
+    # the same key again does not create a second child.
+    conn.execute(
+        """
+        create table if not exists task_spawns (
+            id integer primary key autoincrement,
+            parent_task_id integer not null references tasks(id),
+            child_task_id integer not null references tasks(id),
+            step text not null,
+            step_run_id integer references step_runs(id),
+            spawn_key text,
+            created_at text not null default (datetime('now'))
+        )
+        """
+    )
+    conn.execute("create index if not exists idx_task_spawns_parent on task_spawns(parent_task_id)")
+    conn.execute(
+        "create unique index if not exists idx_task_spawns_key on "
+        "task_spawns(parent_task_id, spawn_key) where spawn_key is not null"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _v1_baseline),
     (2, _v2_metadata_and_parent),
     (3, _v3_approval),
     (4, _v4_artifacts),
     (5, _v5_work_items),
+    (6, _v6_task_spawns),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 
