@@ -480,11 +480,16 @@ def items_submit(
         typer.echo("give exactly one of --file, --value or --json-value")
         raise typer.Exit(1)
     if file is not None:
-        path = file.expanduser().resolve()
-        if not path.is_file():
-            typer.echo("not found: the file to submit")
-            raise typer.Exit(1)
-        submission: Any = {"path": str(path), "sha256": sha256_of(path)}
+        # A file system error's message holds the path: report only its kind.
+        try:
+            path = file.expanduser().resolve()
+            if not path.is_file():
+                typer.echo("not found: the file to submit")
+                raise typer.Exit(1)
+            submission: Any = {"path": str(path), "sha256": sha256_of(path)}
+        except OSError as exc:
+            typer.echo(f"cannot read the file to submit ({type(exc).__name__})")
+            raise typer.Exit(1) from None
     elif value is not None:
         submission = {"value": value}
     else:

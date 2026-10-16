@@ -30,7 +30,7 @@ from runspool.engine.artifacts import Artifact
 from runspool.engine.external import ExternalStep, SubmissionRejected, WorkRequest
 from runspool.engine.step import Step, StepResult
 
-STATE = {"crash": False, "run_last": True}
+STATE = {"crash": False, "run_last": True, "hold": None}
 
 
 class Draft(Step):
@@ -53,6 +53,10 @@ class Review(ExternalStep):
         )
 
     def validate(self, ctx, submission):
+        if STATE["hold"] is not None:  # (entered, go): hold the step's slot until "go"
+            entered, go = STATE["hold"]
+            entered.set()
+            go.wait(10)
         if STATE["crash"]:
             raise RuntimeError("validator broke")
         path = submission.file(ctx.config.workspace_root)
@@ -703,3 +707,105 @@ def test_a_file_that_disappears_after_the_check_is_rejected_without_its_path(tmp
         sub.file()
     assert caught.value.reason == "the submitted file cannot be read (FileNotFoundError)"
     assert "消失" not in caught.value.reason
+
+
+# -- the command line never prints a submitted path from a file error ---------------
+
+_CLI_WITH_FAULT = """
+import sys
+
+import runspool.engine.external as external
+
+mode = sys.argv.pop(1)
+real = external.sha256_of
+
+
+def faulty(path):
+    if mode == "denied":
+        raise PermissionError(13, "Permission denied", str(path))
+    path.unlink()  # gone between the existence check and the read
+    return real(path)
+
+
+external.sha256_of = faulty
+from runspool.cli import main
+
+sys.argv[0] = "runspool"
+main()
+"""
+
+
+@pytest.mark.parametrize(
+    "mode, kind", [("denied", "PermissionError"), ("vanished", "FileNotFoundError")]
+)
+def test_items_submit_reports_a_file_error_without_the_path(ws, tmp_path, mode, kind):
+    import os
+    import subprocess
+
+    ctx, path, _ = ws
+    tid = _new_task(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    item = ctx.items.active_for(tid)
+    token = commands.claim_item(ctx, item["id"], by="agent")
+    target, _ = _file(tmp_path, "good", name="私密 稿件.md")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _CLI_WITH_FAULT,
+            mode,
+            "-c",
+            str(path),
+            "items",
+            "submit",
+            str(item["id"]),
+            "--token",
+            token,
+            "--file",
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "私密 稿件" not in output and str(tmp_path) not in output
+    assert "Traceback" not in output
+    assert kind in output
+    assert ctx.items.get(item["id"])["status"] == "claimed"  # nothing was submitted
+    assert _status(ctx, tid) == TaskStatus.AWAITING_EXTERNAL
+
+
+def test_a_submission_waits_while_the_steps_quota_is_full(ws, tmp_path):
+    """Validation happens when the task can next be scheduled, not within a fixed
+    time: while another validation of the same step holds its only slot, a second
+    submission is not checked, however many rounds the daemon runs."""
+    ctx, _, module = ws
+    first, second = _new_task(ctx), commands.add_task(ctx, "稿件 二", workflow="drafts")
+    run_until_idle(ctx, notifier=lambda m: None)
+    entered, go = threading.Event(), threading.Event()
+    sys.modules[module].STATE["hold"] = (entered, go)
+    _submit(ctx, ctx.items.active_for(first)["id"], *_file(tmp_path, "good", name="1.md"))
+    daemon = ctx.service("runtime").build_daemon()
+    try:
+        daemon.run_once()  # the first validation starts and holds the slot
+        assert entered.wait(10)
+        second_item = ctx.items.active_for(second)
+        _submit(ctx, second_item["id"], *_file(tmp_path, "good", name="2.md"))
+        for _ in range(3):
+            daemon.run_once()
+        assert _status(ctx, second) == TaskStatus.QUEUED  # submitted, not yet checked
+        assert ctx.items.get(second_item["id"])["status"] == "submitted"
+        assert [r["step"] for r in ctx.step_runs.list_for_task(second)] == ["draft"]
+        sys.modules[module].STATE["hold"] = None
+        go.set()
+        for _ in range(6):
+            daemon.run_once()
+            daemon.coordinator.pool.drain()
+        assert _status(ctx, first) == _status(ctx, second) == TaskStatus.COMPLETED
+    finally:
+        go.set()
+        daemon.coordinator.pool.shutdown(wait=True)
