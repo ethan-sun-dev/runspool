@@ -105,7 +105,9 @@ class TaskRepository:
                         child.first_step,
                         TaskStatus.QUEUED,
                         child.max_retries,
-                        _dump(child.metadata),
+                        child.metadata_json
+                        if child.metadata_json is not None
+                        else _dump(child.metadata),
                         parent_task_id,
                     ),
                 )
@@ -368,6 +370,12 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if "metadata" in task:
         task["metadata"] = json.loads(task["metadata"]) if task["metadata"] else {}
     return task
+
+
+def dump_metadata(metadata: Any) -> str | None:
+    """``metadata`` as it is stored (a JSON object, keys sorted). Raises ValueError
+    or TypeError for anything that cannot be stored so."""
+    return _dump(metadata)
 
 
 def _dump(metadata: Any) -> str | None:

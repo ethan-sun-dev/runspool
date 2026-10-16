@@ -25,7 +25,7 @@ from runspool.engine.step import Step, StepDeferred, StepResult
 
 # children: what fanout spawns, as ChildTask keyword arguments; hook: called with
 # the task while fanout runs (a test's way to act mid-step).
-STATE = {"children": [], "degraded": False, "hook": None, "fail_gate": False}
+STATE = {"children": [], "degraded": False, "hook": None, "fail_gate": False, "updates": {}}
 
 
 class Fanout(Step):
@@ -35,7 +35,12 @@ class Fanout(Step):
         if STATE["hook"] is not None:
             STATE["hook"](ctx.task)
         children = [ChildTask(**c) for c in STATE["children"]]
-        return StepResult(message="planned", spawn=children, degraded=STATE["degraded"])
+        return StepResult(
+            message="planned",
+            spawn=children,
+            degraded=STATE["degraded"],
+            updates=STATE["updates"],
+        )
 
 
 class Gate(Step):
@@ -453,3 +458,77 @@ def test_child_task_is_a_plain_value():
     child = ChildTask("in", "unit")
     assert (child.name, child.metadata, child.key) == (None, None, None)
     assert StepResult().spawn == ()
+
+
+# -- declarations that cannot be written fail the step before anything is written ---
+
+
+def _assert_failed_cleanly(ctx, pid, reason):
+    task = ctx.repo.get_task(pid)
+    assert (task["task_status"], task["step"]) == (TaskStatus.MANUAL_REQUIRED, "fanout")
+    assert reason in task["last_error"]
+    (run,) = [r for r in ctx.step_runs.list_for_task(pid) if r["step"] == "fanout"]
+    assert run["status"] == "failed" and reason in run["error"]
+    assert task["metadata"] == {}  # the result's updates were not written
+    assert ctx.repo.list_children(pid) == [] and _spawns(ctx, pid) == []
+
+
+def test_metadata_that_cannot_be_stored_fails_the_step_before_anything_is_written(ws):
+    """{"a": 1, 2: 3} serializes, but not with sorted keys as it is stored."""
+    ctx, _, _, state = ws
+    state["children"] = [{"input": "/私密/稿件.md", "workflow": "unit", "metadata": {"a": 1, 2: 3}}]
+    state["updates"] = {"metadata": {"seen": True}}
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    _assert_failed_cleanly(ctx, pid, "child 1: metadata must be a JSON object")
+
+
+@pytest.mark.parametrize("spawn", [{}, 0, False, ""], ids=["dict", "zero", "false", "str"])
+def test_a_spawn_of_the_wrong_type_fails_the_step_even_when_empty(ws, monkeypatch, spawn):
+    ctx, _, module, _ = ws
+    monkeypatch.setattr(
+        sys.modules[module].Fanout,
+        "run",
+        lambda self, c: StepResult(spawn=spawn, updates={"metadata": {"seen": True}}),
+    )
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    _assert_failed_cleanly(ctx, pid, "spawn must be a list of ChildTask")
+
+
+@pytest.mark.parametrize("spawn", [(), []], ids=["tuple", "list"])
+def test_an_empty_list_spawns_nothing(ws, monkeypatch, spawn):
+    ctx, _, module, _ = ws
+    monkeypatch.setattr(sys.modules[module].Fanout, "run", lambda self, c: StepResult(spawn=spawn))
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    assert ctx.repo.get_task(pid)["task_status"] == TaskStatus.COMPLETED
+    assert ctx.repo.list_children(pid) == [] and _events(ctx, pid, "children_spawned") == []
+
+
+def test_a_store_error_while_creating_children_fails_the_step_not_leaves_it_running(
+    ws, monkeypatch
+):
+    from runspool.persistence.repository import TaskRepository
+
+    ctx, _, _, _ = ws
+    real = TaskRepository.spawner
+
+    def broken(self, parent, plan):
+        hook = real(self, parent, plan)
+
+        def failing(conn):
+            hook(conn)
+            raise sqlite3.IntegrityError("simulated")
+
+        return failing
+
+    monkeypatch.setattr(TaskRepository, "spawner", broken)
+    pid = _parent(ctx)
+    run_until_idle(ctx, notifier=lambda m: None)
+    task = ctx.repo.get_task(pid)
+    assert (task["task_status"], task["step"]) == (TaskStatus.MANUAL_REQUIRED, "fanout")
+    assert task["last_error"] == "cannot create the child tasks: IntegrityError"
+    (run,) = [r for r in ctx.step_runs.list_for_task(pid) if r["step"] == "fanout"]
+    assert run["status"] == "failed"
+    assert ctx.repo.list_children(pid) == [] and _spawns(ctx, pid) == []

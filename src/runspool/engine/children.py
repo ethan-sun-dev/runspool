@@ -20,10 +20,11 @@ and a spawn that does not validate fails the step: nothing is created.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from runspool.persistence.repository import dump_metadata
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,8 @@ class ChildTask:
 
 @dataclass(frozen=True)
 class PlannedChild:
-    """A validated child, with what creating it needs."""
+    """A validated child, with what creating it needs. ``metadata_json`` is its
+    metadata serialized exactly as it is stored (checked when planned)."""
 
     input: str
     workflow: str
@@ -48,6 +50,7 @@ class PlannedChild:
     name: str | None
     metadata: dict[str, Any] | None
     key: str | None
+    metadata_json: str | None = None
 
 
 class SpawnPlan:
@@ -64,8 +67,10 @@ class SpawnPlan:
 
 def plan_children(spawn: Sequence[Any], config: Any) -> tuple[PlannedChild, ...]:
     """Validate ``StepResult.spawn`` against ``config``; raise ValueError naming the
-    child by position (never its input) if anything is wrong."""
-    if isinstance(spawn, (str, bytes)) or not isinstance(spawn, Sequence):
+    child by position (never its input) if anything is wrong. Only a list or tuple
+    is a spawn: an empty one spawns nothing; anything else (``{}``, ``0``, ``""``,
+    ``None``) is an error, even when it is empty or falsy."""
+    if not isinstance(spawn, (list, tuple)):
         raise ValueError("spawn must be a list of ChildTask")
     planned: list[PlannedChild] = []
     keys: set[str] = set()
@@ -83,13 +88,13 @@ def plan_children(spawn: Sequence[Any], config: Any) -> tuple[PlannedChild, ...]
             raise ValueError(f"{where}: workflow {child.workflow!r} is not defined") from None
         if child.name is not None and not isinstance(child.name, str):
             raise ValueError(f"{where}: name must be a string")
-        metadata = None
+        metadata = metadata_json = None
         if child.metadata is not None:
             if not isinstance(child.metadata, Mapping):
                 raise ValueError(f"{where}: metadata must be a JSON object")
             metadata = dict(child.metadata)
-            try:
-                json.dumps(metadata)
+            try:  # the very serialization the store uses (keys sorted, so all strings)
+                metadata_json = dump_metadata(metadata)
             except (TypeError, ValueError):
                 raise ValueError(f"{where}: metadata must be a JSON object") from None
         if child.key is not None:
@@ -107,6 +112,7 @@ def plan_children(spawn: Sequence[Any], config: Any) -> tuple[PlannedChild, ...]
                 name=child.name,
                 metadata=metadata,
                 key=child.key,
+                metadata_json=metadata_json,
             )
         )
     return tuple(planned)

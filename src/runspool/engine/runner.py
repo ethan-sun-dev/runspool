@@ -187,13 +187,13 @@ class TaskRunner:
                 stop_beat.set()
                 beat.join()
             # Children are checked before anything of the result is written: a spawn
-            # that does not validate fails the step, and nothing is created.
-            if result.spawn:
+            # that does not validate (including one of the wrong type, however empty)
+            # fails the step, and nothing is created.
+            children = plan_children(result.spawn, self.config)
+            if children:
                 if getattr(self.repo, "spawner", None) is None:
                     raise RuntimeError("the active store cannot spawn child tasks")
-                spawn = SpawnPlan(
-                    plan_children(result.spawn, self.config), step=task["step"], step_run_id=run_id
-                )
+                spawn = SpawnPlan(children, step=task["step"], step_run_id=run_id)
             if result.artifacts:
                 self._record_artifacts(task, step, run_id, result.artifacts)
             if result.updates:
@@ -247,7 +247,23 @@ class TaskRunner:
         )
         if spawn is not None:
             outcome = replace(outcome, step_run_id=run_id, spawn=spawn)
-        after = sm.finish_step(task_id, outcome, token=claim_token)
+            try:
+                after = sm.finish_step(task_id, outcome, token=claim_token)
+            except Exception as exc:  # noqa: BLE001 - the children could not be written
+                # The transaction rolled back (no child, the parent not advanced): fail
+                # the step instead of leaving the task running. Its updates and
+                # artifacts were already written, as for any step that fails late.
+                self._fail(
+                    sm,
+                    task,
+                    run_id,
+                    t0,
+                    claim_token,
+                    f"cannot create the child tasks: {type(exc).__name__}",
+                )
+                return
+        else:
+            after = sm.finish_step(task_id, outcome, token=claim_token)
         self._report_success(task, after, result)
         if spawn is not None and (spawn.created or spawn.existing):
             self._notify(
