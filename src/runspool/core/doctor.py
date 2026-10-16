@@ -116,8 +116,8 @@ class DoctorService:
                     "plugin changes",
                     False,
                     f"{len(refused)} plugin change(s) refused since startup (first: "
-                    f"{refused[0]}): workflows use artifact contracts; restart the runtime "
-                    "to apply them",
+                    f"{refused[0]}): the plugin set is fixed once started; restart the "
+                    "runtime to apply plugin changes",
                 )
             )
         checks.append(self._external_check())

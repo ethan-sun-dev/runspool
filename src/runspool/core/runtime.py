@@ -99,9 +99,9 @@ class WorkflowContracts:
     started are checked too). Doctor checks every workflow; this only the ones
     that have work.
 
-    The registry is the one the runtime started with: while workflows use artifact
-    contracts, plugin changes (``fiber.restart()`` and the like) are refused until
-    the runtime restarts (see ``runspool.core.boot``). The step about to run is
+    The registry is the one the runtime started with: plugin changes
+    (``fiber.restart()`` and the like) are refused until the runtime restarts
+    (see ``runspool.core.boot``). The step about to run is
     checked as the object that will run, not as whatever is registered under its
     name by then.
     """
@@ -155,6 +155,8 @@ class RuntimeService:
         lazily registered step imports cleanly. A failed plugin may have been meant to
         provide or override a step; running without it could silently run the wrong
         step. Disable plugins you do not want instead.
+
+        Once ready, the plugin set is fixed: later plugin changes are refused.
         """
         report = self._startup.report()
         problems = report.lines()
@@ -171,6 +173,12 @@ class RuntimeService:
                 + "\n  ".join(f"{name}: {type(exc).__name__}: {exc}" for name, exc in failures),
                 report,
             )
+        # From here on the plugin set is fixed: every plugin change is refused until
+        # the runtime restarts, so steps (and their artifact contracts) are the ones
+        # checked now (see runspool.core.boot).
+        fix = getattr(self._startup, "fix_plugin_set", None)
+        if callable(fix):
+            fix()
 
     def build_coordinator(self, *, notifier: Callable[[str], None] | None = None) -> Coordinator:
         registry = self.steps.registry

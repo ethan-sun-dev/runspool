@@ -10,8 +10,8 @@ imports every lazy step and reports the ones that fail; ``run``, ``daemon`` and
 ``doctor`` call it before relying on the registry.
 
 Once the application has started, registering or unregistering a step is a change
-to the loaded plugins and goes through the kernel's change guard: while workflows
-use artifact contracts, it is refused (see ``runspool.core.boot``).
+to the loaded plugins and goes through the kernel's change guard, which refuses
+it: the plugin set is fixed once started (see ``runspool.core.boot``).
 """
 
 from __future__ import annotations

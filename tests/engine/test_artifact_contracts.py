@@ -665,10 +665,12 @@ def test_allow_unverified_runs_a_mixed_chain_and_reports_it_once(profile, caplog
 
 # -- contracts are checked against the steps registered at startup -----------------
 #
-# While workflows use artifact contracts, plugin changes after startup (reloading a
-# plugin with fiber.restart(), loading or unloading one, registering or unregistering
-# a step) are refused before anything changes; they take effect after a restart.
-# Without contracts, plugins reload at run time as before.
+# Once the runtime has started (run, the daemon), every plugin change (reloading a
+# plugin with fiber.restart(), loading or unloading one, providing or withdrawing a
+# service, registering or unregistering a step) is refused before anything changes,
+# with or without contracts; it takes effect after a restart. (What a reloaded
+# plugin would declare is only known once its old version is gone, so a reload
+# cannot be judged in advance: the plugin set is simply fixed.)
 
 RELOADABLE = """
 from runspool.engine.step import Step, StepResult
@@ -708,7 +710,8 @@ consumer.inject = ["steps"]
 @pytest.fixture
 def reloadable(tmp_path, monkeypatch, request):
     """``reloadable(provides, declare=True)`` boots a profile whose ``produce`` step
-    comes from a plugin that can be reloaded; returns ``(ctx, plugin module, path)``."""
+    comes from a plugin that can be reloaded, and starts its runtime (as ``run`` and
+    the daemon do); returns ``(ctx, plugin module, path)``."""
     module = f"reloadable_{request.node.name.replace('[', '_').replace(']', '_')}"
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.delitem(sys.modules, module, raising=False)
@@ -727,7 +730,9 @@ def reloadable(tmp_path, monkeypatch, request):
             f"      - {{id: consumer, plugin: '{module}:consumer'}}\n",
             encoding="utf-8",
         )
-        return load_context(path), sys.modules[module], path
+        ctx = load_context(path)
+        ctx.service("runtime").ensure_ready()  # the runtime starts: the plugin set is fixed
+        return ctx, sys.modules[module], path
 
     return make
 
@@ -756,7 +761,7 @@ def _new_task(ctx):
     return ctx.repo.create_task(input="in", workflow="drafts", first_step="produce", max_retries=0)
 
 
-def test_a_reload_is_refused_while_workflows_use_contracts(reloadable):
+def test_a_reload_is_refused_once_the_runtime_has_started(reloadable):
     """Formerly: a reload that breaks the chain stops new tasks of a running daemon.
     Now that reload is refused, the registry is left as it was, and the daemon goes
     on with the steps it started with."""
@@ -766,7 +771,7 @@ def test_a_reload_is_refused_while_workflows_use_contracts(reloadable):
         assert _drive(ctx, daemon, _new_task(ctx)) == TaskStatus.COMPLETED
         before = _registered(ctx)
         plugin.STATE["provides"] = []  # the new version would no longer declare master
-        with pytest.raises(PluginChangeRefused, match="after the runtime restarts"):
+        with pytest.raises(PluginChangeRefused, match="after restarting the runtime"):
             _fiber(ctx, "producer").restart()
         assert _registered(ctx) == before  # same names, same step objects
         assert _fiber(ctx, "producer").state is FiberState.ACTIVE
@@ -835,7 +840,7 @@ def test_every_plugin_change_is_refused_before_it_changes_anything(reloadable, c
         "register a step": lambda: producer.ctx.steps.register(Extra()),
         "unregister a step": plugin.STATE["undo"],
     }[change]
-    with pytest.raises(PluginChangeRefused, match="artifact contracts"):
+    with pytest.raises(PluginChangeRefused, match="plugin set is fixed"):
         act()
     assert _registered(ctx) == before
     assert ctx.kernel.fibers == fibers
@@ -857,22 +862,54 @@ def test_doctor_says_to_restart_after_a_refused_change(reloadable):
     assert "restart the runtime" in checks[0].detail
 
 
-def test_without_contracts_plugins_reload_as_before(reloadable):
+def test_without_contracts_a_reload_is_refused_too(reloadable):
+    """Formerly: without contracts plugins reload as before. That promise is
+    withdrawn: whether a reload would introduce contracts cannot be known before the
+    old version is unloaded, so the plugin set is fixed with or without them.
+    Workflows without contracts still run exactly as before."""
     ctx, _, _ = reloadable([], declare=False)
     daemon = ctx.service("runtime").build_daemon()
     try:
         before = _registered(ctx)
-        _fiber(ctx, "producer").restart()
-        after = _registered(ctx)
-        assert set(after) == set(before)
-        assert after["produce"] is not before["produce"]  # really reloaded
-        assert after["consume"] is before["consume"]
+        with pytest.raises(PluginChangeRefused, match="plugin set is fixed"):
+            _fiber(ctx, "producer").restart()
+        assert _registered(ctx) == before
         assert _fiber(ctx, "producer").state is FiberState.ACTIVE
         assert _drive(ctx, daemon, _new_task(ctx)) == TaskStatus.COMPLETED
     finally:
         daemon.coordinator.pool.shutdown(wait=True)
     names = [c.name for c in ctx.service("doctor").run()]
-    assert "plugin changes" not in names and "artifacts" not in names
+    assert "artifacts" not in names
+    assert "plugin changes" in names
+
+
+def test_plugins_may_still_change_before_the_runtime_starts(tmp_path):
+    """Until run or the daemon starts, code embedding RunSpool may load plugins into
+    the booted kernel as before; from then on the plugin set is fixed."""
+    path = tmp_path / "runspool.yaml"
+    path.write_text(f"workspace_root: {tmp_path / '工作 区'}\n", encoding="utf-8")
+    ctx = load_context(path)
+
+    class Late(_Plain):
+        name = "late"
+
+    def late(plugin_ctx, config):
+        plugin_ctx.steps.register(Late())
+
+    late.inject = ["steps"]
+    fiber = ctx.kernel.root.plugin(late, name="late")
+    fiber.restart()
+    assert ctx.service("steps").has("late")
+    daemon = ctx.service("runtime").build_daemon()
+    try:
+        with pytest.raises(PluginChangeRefused):
+            fiber.restart()
+        assert ctx.service("steps").has("late")
+        with pytest.raises(PluginChangeRefused):
+            ctx.kernel.root.plugin(lambda c, config: None)
+    finally:
+        daemon.coordinator.pool.shutdown(wait=True)
+    assert _doctor(ctx, "plugin changes") is not None
 
 
 def test_shutting_down_is_never_refused(reloadable):
@@ -1027,3 +1064,18 @@ def test_a_reload_during_a_check_is_refused_so_one_version_is_judged(tmp_path, m
     assert task["step"] == "start"
     assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
     assert "'consume' requires 'transcript'" in task["last_error"]
+
+
+def test_a_reload_that_would_introduce_contracts_is_refused_before_unloading(reloadable):
+    """No contracts when the runtime started; the new version of the plugin would
+    declare some. What a new version declares is only known after its apply runs,
+    i.e. after the old version is unloaded, so the only way to refuse it in time is
+    to refuse every plugin change once the runtime has started."""
+    ctx, plugin, _ = reloadable(["master"], declare=False)
+    before = _registered(ctx)
+    plugin.STATE["declare"] = True
+    with pytest.raises(PluginChangeRefused):
+        _fiber(ctx, "producer").restart()
+    assert _registered(ctx) == before  # same names, same (undeclared) step objects
+    assert _fiber(ctx, "producer").state is FiberState.ACTIVE
+    assert _doctor(ctx) is None  # still no contracts
