@@ -18,6 +18,8 @@
 - [JSON output for scripts & agents](agent-json-output.md) — `--json` and the
   `inspect` schema.
 - [Examples](examples.md) — the three runnable examples.
+- [Upgrading](upgrading.md) — from 0.2.x to 0.3.0: what changes, and the
+  database upgrade that cannot be undone.
 
 New here? Start with the [project README](../README.md) quickstart, then read
 [Concepts](concepts.md).

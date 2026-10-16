@@ -6,68 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - YYYY-MM-DD
+
+<!-- Release date: set when 0.3.0 is published. -->
+
+Upgrading from 0.2.x: read "Breaking" below and
+[docs/upgrading.md](docs/upgrading.md). The official plugin
+`runspool-wechat` 0.2.1 accepts RunSpool 0.3 (0.2.0 required `<0.3`).
+
 ### Added
-- macOS keychain credentials: `credentials-local` takes `keychain:
-  {service, timeout_seconds}` to look a name up first as a generic password
-  item (service = `service`, account = the name), read with
-  `/usr/bin/security find-generic-password ... -w` by absolute path. Only names
-  are arguments; the value comes back on a pipe, and `security` gets a fixed
-  minimal environment (`PATH` only), never RunSpool's own. A missing item
-  (exit 44) is absent; anything else (not macOS, no `security`, access denied,
-  a timeout, non-UTF-8 output) raises `KeychainError` with no value, no
-  `security` output, no chained exception and no local variable holding the
-  output in its traceback, and no later source is asked. `doctor` gains a
-  `credentials keychain` check when it is configured. See
-  `runspool.core.keychain`.
-- `credentials-local` takes `environment: false` to stop reading the process
-  environment (with or without the keychain). Both settings are off by
-  default: without them, credentials resolve exactly as before.
-- `runspool events --since <cursor> [--task <id>] --json` and `EventLog.since()`:
-  follow events across all tasks from a cursor. Event ids only increase, so a
-  client in another process can resume from the last id it saw. `logs --json`
-  output is unchanged.
-- Executor lock: only one process executes steps on a database at a time. `run`,
-  `run_until_idle()` and the daemon take an OS file lock next to the database
-  (`runspool.db.executor-lock`) and refuse to start while another process holds
-  it (`ExecutorBusy`, naming the holder's pid). The OS releases it when the
-  holder exits, so there is no stale lock. See `runspool.executor_lock`.
-- Plugin metadata, all optional: `category`, `description`, `external` (what a
-  plugin needs outside Python, as `External(kind, name, hint)`) and `hosts`
-  (free-form environment labels), on `Plugin(...)` or as attributes.
-  `runspool.kernel.config_schema()` gives a config model's JSON Schema.
-- `runspool plugins [--installed] [--json]`: each entry's state and metadata,
-  with its config schema; `--installed` adds installed plugins the profile does
-  not mount (imported, never applied). `Loader.describe()` is the API behind it.
-- `doctor` has an `external` check: every `binary` an active plugin declares
-  must be on `PATH`.
-- Artifact contracts, all optional: a step may declare the artifact types it
-  `requires` and `provides` (`master`, `variant:blog`, or with a placeholder
-  `variant:<target>`), and a workflow the types its input provides (`inputs`).
-  `doctor` checks every workflow and gains an `artifacts` check, shown only
-  when something declares a contract (malformed declarations included). `run`
-  and the daemon check a task's workflow before each of its steps and refuse
-  the step (`manual_required`, with the reason) while a declared requirement is
-  not provided by an earlier step; other workflows keep running. A workflow
-  mixing declared and undeclared steps may set `allow_unverified` to accept
-  gaps only an undeclared step could fill (reported as unverified). See
-  `runspool.engine.artifacts`.
-- Contracts are checked against the steps registered when the runtime started
-  (see "Changed": the plugin set is fixed from then on).
-- Kernel: `Kernel.guard_changes(guard)` lets an application refuse changes to
-  its plugins (load, reload, unload, provide or withdraw a service) once started;
-  `Fiber.check_change(what)` applies the same guard to a service's own
-  registrations (on the fiber, so no name is added to `Context`, whose
-  attributes are service names); `Fiber.effect(..., change=...)` marks a
-  registration whose early dispose is checked too. Shutting the kernel down is
-  never refused.
-- If a plugin registers its own `artifacts` command, it is used instead of the
-  new built-in one.
-- `StepResult.artifacts`: a step may record what it produced as
-  `Artifact(type, path, sha256=None)`; the runner hashes files when no sha256 is
-  given and stores type, path, sha256 and size in a new `artifacts` table, tied
-  to the step run. `runspool artifacts <id> [--all] [--json]` lists them.
-- Schema version 4: adds the `artifacts` table. Existing tables are unchanged;
-  a database upgraded to v4 can no longer be opened by 0.2.x.
 - External steps, all optional (`runspool.engine.external`): a step that
   subclasses `ExternalStep` is done outside the engine (by an AI agent, by a
   person). When a task reaches it, the engine opens a work item from the step's
@@ -93,10 +40,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only, never its path.
 - `runspool items [--all] [--task ID] [--json]`, `items show <id>`, `items claim
   <id>`, `items release <id>`, `items submit <id> --token T (--file PATH | --value
-  TEXT | --json-value JSON)`. If a plugin registers its own `items` command, it
-  is used instead of the built-in one.
-- Schema version 5: adds the `work_items` table. Existing tables are unchanged;
-  databases from 0.2.2 (v3) and with artifacts (v4) upgrade in place.
+  TEXT | --json-value JSON)`.
 - Child tasks from a step result (`runspool.engine.children`): a step may return
   `StepResult(spawn=[ChildTask(input, workflow, name=None, metadata=None,
   key=None)])`. When the step succeeds, the children are created in the same
@@ -116,12 +60,102 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   transaction as its children and the parent's transition, so a failed or
   interrupted attempt leaves no update behind. An
   accepted external step submission may spawn children too.
-- Schema version 6: adds the `task_spawns` table (which step run of a parent
-  spawned which child, and its key). Existing tables are unchanged; databases
-  from 0.2.2 (v3), v4 and v5 upgrade in place.
+- Artifact contracts, all optional: a step may declare the artifact types it
+  `requires` and `provides` (`master`, `variant:blog`, or with a placeholder
+  `variant:<target>`), and a workflow the types its input provides (`inputs`).
+  `doctor` checks every workflow and gains an `artifacts` check, shown only
+  when something declares a contract (malformed declarations included). `run`
+  and the daemon check a task's workflow before each of its steps and refuse
+  the step (`manual_required`, with the reason) while a declared requirement is
+  not provided by an earlier step; other workflows keep running. A workflow
+  mixing declared and undeclared steps may set `allow_unverified` to accept
+  gaps only an undeclared step could fill (reported as unverified). See
+  `runspool.engine.artifacts`.
+- `StepResult.artifacts`: a step may record what it produced as
+  `Artifact(type, path, sha256=None)`; the runner hashes files when no sha256 is
+  given and stores type, path, sha256 and size in a new `artifacts` table, tied
+  to the step run. `runspool artifacts <id> [--all] [--json]` lists them.
+  If a plugin registers its own `artifacts` command, it is used instead (see
+  "Breaking").
+- `runspool events --since <cursor> [--task <id>] --json` and `EventLog.since()`:
+  follow events across all tasks from a cursor. Event ids only increase, so a
+  client in another process can resume from the last id it saw. `logs --json`
+  output is unchanged.
+- Executor lock: only one process executes steps on a database at a time. `run`,
+  `run_until_idle()` and the daemon take an OS file lock next to the database
+  (`runspool.db.executor-lock`) and refuse to start while another process holds
+  it (`ExecutorBusy`, naming the holder's pid). The OS releases it when the
+  holder exits, so there is no stale lock. See `runspool.executor_lock`.
+- Plugin metadata, all optional: `category`, `description`, `external` (what a
+  plugin needs outside Python, as `External(kind, name, hint)`) and `hosts`
+  (free-form environment labels), on `Plugin(...)` or as attributes.
+  `runspool.kernel.config_schema()` gives a config model's JSON Schema.
+- `runspool plugins [--installed] [--json]`: each entry's state and metadata,
+  with its config schema; `--installed` adds installed plugins the profile does
+  not mount (imported, never applied). `Loader.describe()` is the API behind it.
+- `doctor` has an `external` check: every `binary` an active plugin declares
+  must be on `PATH`.
+- macOS keychain credentials: `credentials-local` takes `keychain:
+  {service, timeout_seconds}` to look a name up first as a generic password
+  item (service = `service`, account = the name), read with
+  `/usr/bin/security find-generic-password ... -w` by absolute path. Only names
+  are arguments; the value comes back on a pipe, and `security` gets a fixed
+  minimal environment (`PATH` only), never RunSpool's own. A missing item
+  (exit 44) is absent; anything else (not macOS, no `security`, access denied,
+  a timeout, non-UTF-8 output) raises `KeychainError` with no value, no
+  `security` output, no chained exception and no local variable holding the
+  output in its traceback, and no later source is asked. `doctor` gains a
+  `credentials keychain` check when it is configured. See
+  `runspool.core.keychain`.
+- `credentials-local` takes `environment: false` to stop reading the process
+  environment (with or without the keychain). Both settings are off by
+  default: without them, credentials resolve exactly as before.
+- Kernel: `Kernel.guard_changes(guard)` lets an application refuse changes to
+  its plugins (load, reload, unload, provide or withdraw a service) once started;
+  `Fiber.check_change(what)` applies the same guard to a service's own
+  registrations (on the fiber, so no name is added to `Context`, whose
+  attributes are service names); `Fiber.effect(..., change=...)` marks a
+  registration whose early dispose is checked too. Shutting the kernel down is
+  never refused.
+- `runspool --version` prints the installed version.
+- Schema versions 4, 5 and 6, each adding one table and leaving existing
+  tables and rows untouched: `artifacts` (v4), `work_items` (v5) and
+  `task_spawns` (v6, which step run of a parent spawned which child, and its
+  key). A database from 0.2.x (v3) or 0.1.x is upgraded in place the first
+  time 0.3.0 opens it; a 0.1.x database first gets the columns that versions
+  1–3 add to its existing tables (see "Breaking" and
+  [docs/upgrading.md](docs/upgrading.md)).
 
 ### Changed
-- The plugin set is fixed once the runtime starts (`run`, the daemon), with or
+- Contracts are checked against the steps registered when the runtime started
+  (see "Breaking": the plugin set is fixed from then on).
+- `run --force` now only skips the daemon pid-file check; it no longer lets
+  `run` execute alongside another executor.
+- `doctor` lists more checks: `external` always; `artifacts`, `plugin
+  changes` and `credentials keychain` only when something uses them. Scripts
+  that compare doctor's list of checks should expect them.
+- Plugins in this repository accept RunSpool 0.3: `runspool-wechat` 0.2.1 and
+  the example plugin declare `runspool>=0.2,<0.4`.
+
+### Breaking
+- **Databases cannot go back to 0.2.x.** 0.3.0 upgrades an older database
+  (0.2.x writes schema v3; a 0.1.x database has no version and is upgraded
+  from the v1 layout) to v6 in place, automatically, the first time it opens
+  it. From then on 0.2.x refuses to open it
+  (`SchemaTooNew`, for any version 4 or later). There is no downgrade: back
+  the database up before upgrading if you may need to go back, and never point
+  a 0.2.x installation at a database 0.3.0 has opened.
+- **Upgrading waits for the executor lock.** Upgrading the schema of an
+  existing database needs the executor lock:
+  opening an older database while another process executes tasks raises
+  `ExecutorBusy` instead of changing the schema under it. Up-to-date databases
+  open as before.
+- **One executor per database.** `run`, `run_until_idle()` and the daemon take
+  the executor lock; a second one on the same database exits with
+  `ExecutorBusy` (naming the holder's pid) instead of running alongside.
+  Running two `run` processes on one database at once worked before; it no
+  longer does. `run --force` does not get around it.
+- **The plugin set is fixed once the runtime starts** (`run`, the daemon), with or
   without artifact contracts: every later plugin change (reloading a plugin with
   `fiber.restart()`, loading or unloading one, providing or withdrawing a
   service, registering or unregistering a step) is refused with
@@ -133,22 +167,56 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   inside a plugin's `apply` or a disposer): it raises `StartupError` and
   starts and fixes nothing. Every way to build what executes steps
   (`build_coordinator`, `build_daemon`, `run_until_idle`) goes through this
-  same check (`ensure_ready`) first; `build_coordinator` therefore also
-  refuses a partially loaded plugin set now, like `run` and the daemon. This
-  withdraws run-time plugin reloading, which 0.2 already did not support (the
+  same check (`ensure_ready`) first. This withdraws run-time plugin reloading, which 0.2 already did not support (the
   plugin set changed only at startup and shutdown): what a reloaded plugin
   would declare is only known once its old version is gone, so a reload cannot
   be checked in advance.
+- **`build_coordinator()` checks like `run`.** `RuntimeService.build_coordinator()`
+  now starts with the same check as
+  `build_daemon()` and `run_until_idle()` (`ensure_ready`): it raises
+  `StartupError` when an enabled plugin failed to load or a lazily registered
+  step does not import (it built a coordinator anyway before), and when
+  plugins are still loading or unloading. It also fixes the plugin set, so
+  plugin changes after it are refused.
+- **Rules once artifact contracts are used.** Nothing changes for workflows
+  that declare nothing. In a workflow where any step (or the workflow's
+  `inputs`) declares a contract, every `requires` must be provided by an
+  earlier step or by `inputs`; a step that declares nothing provides nothing,
+  so a gap only it could fill is an error unless the workflow sets
+  `allow_unverified`. `run` and the daemon refuse such a step
+  (`manual_required`, with the reason) instead of running it, and `doctor`'s
+  `artifacts` check fails. Malformed declarations are errors, never "declares
+  nothing". A step that declares `provides` may only record artifacts of those
+  types: anything else fails the step.
+- **Built-in commands added and how they yield.** New built-in commands
+  `artifacts`, `items`, `events` and `plugins`. A plugin command named
+  `artifacts` or `items` replaces the built-in one, as before 0.3.0. A plugin
+  command named `events` or `plugins` now clashes with a built-in and is
+  ignored with a warning (the rule for every other built-in name).
+- **A new task status, `awaiting_external`** (only reached by workflows with
+  an external step), offering `items` and `terminate`, and new event types:
+  `item_opened`, `item_claimed`, `item_released`, `item_submitted`,
+  `item_rejected` and `children_spawned`. Clients that enumerate statuses or
+  event types should accept them.
+- **Plugins that require `runspool<0.3` are refused**, as RunSpool refuses any
+  plugin outside its declared range: `runspool-wechat` 0.2.0 among them. Use
+  `runspool-wechat` 0.2.1, ask a plugin's author for a release that accepts
+  0.3, or exempt an exact version in the profile (`allow: [name@version]`).
+- **Custom stores** (replacing the `store` seam) need more for each new
+  feature: recorded artifacts need `store.artifacts`; external steps need
+  `store.items` and `repo.transition(..., also=)`; child tasks need
+  `repo.spawner`, `repo.result_writer` and `repo.prepare_updates`; and
+  `runspool events` needs `store.log.since`. A store without one keeps working
+  until that feature is used, which then fails with an error. This is not a
+  complete list: see [docs/upgrading.md](docs/upgrading.md#custom-stores) and
+  run `runspool.testing.StoreContract`, which does not check these new
+  interfaces yet.
+
+### Fixed
 - Crash recovery runs only in the lock holder, so a second process no longer
   requeues work another process is running.
-- Upgrading the schema of an existing database waits for the executor lock:
-  opening an older database while another process executes tasks raises
-  `ExecutorBusy` instead of changing the schema under it. Up-to-date databases
-  open as before.
 - The daemon never reclaims a task its own process is running, however old the
   task's heartbeat looks (e.g. right after the machine wakes from sleep).
-- `run --force` now only skips the daemon pid-file check; it no longer lets
-  `run` execute alongside another executor.
 
 ## [0.2.2] - 2026-10-15
 
@@ -328,7 +396,8 @@ Initial release.
 - Documentation (`docs/`), English + Simplified Chinese READMEs, and CI running
   ruff, pytest (Python 3.11/3.12/3.13), and an example smoke test.
 
-[Unreleased]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/ethan-sun-dev/runspool/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/ethan-sun-dev/runspool/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ethan-sun-dev/runspool/compare/v0.1.0...v0.2.0
