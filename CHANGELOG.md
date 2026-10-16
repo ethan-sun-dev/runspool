@@ -62,7 +62,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `PluginChangeRefused` before anything changes. Restart the runtime or the
   daemon for plugin changes to take effect. `doctor` reports a `plugin changes`
   check once such a change was refused in its process. Code embedding RunSpool
-  may still load plugins into a booted kernel before the runtime starts. This
+  may still load plugins into a booted kernel before the runtime starts, but
+  the runtime cannot start while plugins are still loading or unloading (from
+  inside a plugin's `apply` or a disposer): it raises `StartupError` and
+  starts and fixes nothing. This
   withdraws run-time plugin reloading, which 0.2 already did not support (the
   plugin set changed only at startup and shutdown): what a reloaded plugin
   would declare is only known once its old version is gone, so a reload cannot

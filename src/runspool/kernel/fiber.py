@@ -464,6 +464,15 @@ class Kernel:
         """Every live plugin fiber, in load order (the root excluded)."""
         return list(self._fibers)
 
+    @property
+    def changing(self) -> bool:
+        """Whether a change to the loaded plugins is in progress right now: a plugin
+        is loading or unloading (code running inside its ``apply`` or a disposer
+        sees ``True``)."""
+        return bool(self._changing) or any(
+            fiber._phase is not None for fiber in (self.root_fiber, *self._fibers)
+        )
+
     def dispose(self) -> None:
         """Unload every plugin, newest first. Plugins still loading finish, then go.
         Never refused by the change guard."""

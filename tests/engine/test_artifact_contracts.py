@@ -26,7 +26,7 @@ from runspool.engine.artifacts import (
 from runspool.engine.registry import StepRegistry
 from runspool.engine.runner import TaskRunner
 from runspool.engine.step import Step, StepResult
-from runspool.kernel import FiberState, PluginChangeRefused
+from runspool.kernel import FiberState, PluginChangeRefused, StartupError
 from runspool.models import TaskStatus
 from runspool.persistence.state_machine import StateMachine
 from runspool.runtime import run_until_idle
@@ -1079,3 +1079,91 @@ def test_a_reload_that_would_introduce_contracts_is_refused_before_unloading(rel
     assert _registered(ctx) == before  # same names, same (undeclared) step objects
     assert _fiber(ctx, "producer").state is FiberState.ACTIVE
     assert _doctor(ctx) is None  # still no contracts
+
+
+# -- the runtime cannot start while plugins are still loading -------------------------
+
+
+def _late_profile(tmp_path):
+    path = tmp_path / "runspool.yaml"
+    path.write_text(
+        f"workspace_root: {tmp_path / '工作 区'}\n"
+        "workflows:\n  drafts:\n    steps: [start, consume]\n",
+        encoding="utf-8",
+    )
+    return load_context(path)
+
+
+class _Start(_Plain):
+    name = "start"
+    provides = ()
+
+
+class _NeedsMaster(_Plain):
+    name = "consume"
+    requires = ("master",)
+
+
+def test_starting_the_runtime_from_inside_a_plugin_load_is_refused(tmp_path, monkeypatch):
+    ctx = _late_profile(tmp_path)
+    runtime = ctx.service("runtime")
+    built = []
+    monkeypatch.setattr(
+        type(runtime), "build_coordinator", lambda self, **kw: built.append(1) or None
+    )
+    seen = {}
+
+    def late(plugin_ctx, config):
+        plugin_ctx.steps.register(_Start())
+        before = _registered(ctx)
+        for start in (runtime.ensure_ready, runtime.build_daemon):
+            with pytest.raises(StartupError, match="still being loaded") as caught:
+                start()
+            seen.setdefault("errors", []).append(str(caught.value))
+        seen["unchanged"] = _registered(ctx) == before
+        seen["fixed"] = ctx.service("startup")._fixed
+        seen["guard"] = ctx.kernel._change_guard
+        plugin_ctx.steps.register(_NeedsMaster())  # loading goes on, unguarded
+
+    late.inject = ["steps"]
+    fiber = ctx.kernel.root.plugin(late, name="late")
+    assert fiber.state is FiberState.ACTIVE
+    assert len(seen["errors"]) == 2 and seen["unchanged"]
+    assert seen["fixed"] is False and seen["guard"] is None
+    assert built == []  # no coordinator, so no executor
+    # Once loading has finished the runtime starts normally and fixes the plugin set.
+    runtime.ensure_ready()
+    with pytest.raises(PluginChangeRefused):
+        fiber.restart()
+
+
+def test_a_daemon_started_mid_load_cannot_run_a_step_before_the_load_ends(tmp_path):
+    """The reviewed sequence: a plugin's apply builds a daemon and lets it run a task
+    before registering the consumer that breaks the chain."""
+    ctx = _late_profile(tmp_path)
+    tid = ctx.repo.create_task(input="in", workflow="drafts", first_step="start", max_retries=0)
+
+    def late(plugin_ctx, config):
+        plugin_ctx.steps.register(_Start())
+        try:
+            daemon = ctx.service("runtime").build_daemon()
+        except StartupError:
+            daemon = None
+        if daemon is not None:
+            try:
+                daemon.run_once()
+                daemon.coordinator.pool.drain()
+            finally:
+                daemon.coordinator.pool.shutdown(wait=True)
+        plugin_ctx.steps.register(_NeedsMaster())
+
+    late.inject = ["steps"]
+    ctx.kernel.root.plugin(late, name="late")
+    assert ctx.step_runs.list_for_task(tid) == []  # "start" never ran
+    daemon = ctx.service("runtime").build_daemon()
+    try:
+        assert _drive(ctx, daemon, tid) == TaskStatus.MANUAL_REQUIRED
+    finally:
+        daemon.coordinator.pool.shutdown(wait=True)
+    assert ctx.step_runs.list_for_task(tid) == []
+    assert "'consume' requires 'master'" in ctx.repo.get_task(tid)["last_error"]

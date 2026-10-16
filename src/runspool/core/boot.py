@@ -90,6 +90,10 @@ class StartupInfo:
         self.refused_changes: list[str] = []
         self._fixed = False
 
+    def plugins_changing(self) -> bool:
+        """Whether plugins are being loaded or unloaded right now."""
+        return self.loader.kernel.changing
+
     def fix_plugin_set(self) -> None:
         """From now on refuse every change to the loaded plugins (see the module
         docstring). Called when the runtime starts executing; idempotent."""

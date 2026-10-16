@@ -156,9 +156,19 @@ class RuntimeService:
         provide or override a step; running without it could silently run the wrong
         step. Disable plugins you do not want instead.
 
-        Once ready, the plugin set is fixed: later plugin changes are refused.
+        Once ready, the plugin set is fixed: later plugin changes are refused. So the
+        runtime cannot start while plugins are still being loaded or unloaded (from
+        inside a plugin's ``apply`` or a disposer): what that plugin registers next
+        would not be fixed yet. Nothing is started or fixed then.
         """
         report = self._startup.report()
+        changing = getattr(self._startup, "plugins_changing", None)
+        if callable(changing) and changing():
+            raise StartupError(
+                "cannot run: plugins are still being loaded or unloaded; start the runtime "
+                "after loading has finished (not from inside a plugin's apply or disposer)",
+                report,
+            )
         problems = report.lines()
         if problems:
             raise StartupError(
