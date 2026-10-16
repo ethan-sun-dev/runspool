@@ -25,7 +25,12 @@ class TasksService:
         from runspool.app import AppContext
 
         self._app = AppContext(
-            config=config, db=store.db, repo=store.repo, log=store.log, step_runs=store.step_runs
+            config=config,
+            db=store.db,
+            repo=store.repo,
+            log=store.log,
+            step_runs=store.step_runs,
+            items=getattr(store, "items", None),
         )
 
     def machine(self, workflow: str) -> StateMachine:
@@ -34,6 +39,7 @@ class TasksService:
             self._store.log,
             workflow=self._config.workflow(workflow),
             step_runs=self._store.step_runs,
+            items=getattr(self._store, "items", None),
         )
 
     def get(self, task_id: int) -> dict[str, Any] | None:

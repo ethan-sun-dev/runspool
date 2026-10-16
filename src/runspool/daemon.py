@@ -71,6 +71,7 @@ class Daemon:
             self.coordinator.log,
             workflow=self.config.workflow(any_workflow),
             step_runs=self.coordinator.runner.step_runs,
+            items=getattr(self.coordinator.runner, "_items", None),
         )
         sm.recover_interrupted()
 

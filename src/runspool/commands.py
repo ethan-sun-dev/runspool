@@ -99,6 +99,63 @@ def reject_task(ctx: AppContext, task_id: int, *, reason: str = "", by: str = "c
     _sm(ctx, task_id).reject(task_id, reason=reason, by=by)
 
 
+# -- external steps: work items (runspool.engine.external) -----------------------------
+
+
+class ItemUnavailable(ValueError):
+    """A work item cannot be claimed, released or submitted in its current state."""
+
+
+def _items(ctx: AppContext) -> Any:
+    if ctx.items is None:
+        raise ItemUnavailable("the active store has no work items (external steps)")
+    return ctx.items
+
+
+def get_item(ctx: AppContext, item_id: int) -> dict[str, Any]:
+    item = _items(ctx).get(item_id)
+    if item is None:
+        raise KeyError(f"work item {item_id}")
+    return item
+
+
+def claim_item(ctx: AppContext, item_id: int, *, by: str) -> str:
+    """Claim an open work item; returns the claim token needed to submit or release.
+    Only one claimant wins: anyone else gets ItemUnavailable."""
+    item = get_item(ctx, item_id)
+    token = _items(ctx).claim(item_id, by=by)
+    if token is None:
+        status = (_items(ctx).get(item_id) or item)["status"]
+        raise ItemUnavailable(f"work item {item_id} cannot be claimed: it is {status}")
+    return token
+
+
+def release_item(ctx: AppContext, item_id: int, *, token: str | None) -> None:
+    """Give a claimed item back; ``token=None`` releases anyone's claim."""
+    item = get_item(ctx, item_id)
+    if not _items(ctx).release(item_id, token=token):
+        why = "not claimed" if item["status"] != "claimed" else "claimed with another token"
+        raise ItemUnavailable(f"work item {item_id} cannot be released: it is {why}")
+
+
+def submit_item(
+    ctx: AppContext, item_id: int, *, token: str, value: dict[str, Any], by: str | None = None
+) -> None:
+    """Submit a result for a claimed item. Only records it and queues the task: the
+    step's validator runs in the executor (``run`` or the daemon)."""
+    from runspool.persistence.work_items import ItemConflict
+
+    if not isinstance(value, dict):
+        raise ValueError("a submission must be a JSON object")
+    item = get_item(ctx, item_id)
+    if item["status"] != "claimed":
+        raise ItemUnavailable(f"work item {item_id} cannot be submitted: it is {item['status']}")
+    try:
+        _sm(ctx, item["task_id"]).submit_external(item, token=token, value=value, by=by)
+    except ItemConflict as exc:
+        raise ItemUnavailable(str(exc)) from None
+
+
 def _require_task(ctx: AppContext, task_id: int) -> dict:
     task = ctx.repo.get_task(task_id)
     if task is None:

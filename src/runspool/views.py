@@ -45,6 +45,7 @@ _ACTIONS: dict[str, list[str]] = {
     TaskStatus.COMPLETED: [],
     TaskStatus.PARTIALLY_COMPLETED: [],
     TaskStatus.AWAITING_APPROVAL: ["approve", "reject", "terminate"],
+    TaskStatus.AWAITING_EXTERNAL: ["items", "terminate"],
     TaskStatus.TERMINATED: [],
 }
 
@@ -142,9 +143,19 @@ def detail_view(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
-def _suggested_next_action(task: dict[str, Any], *, asked: str | None = None) -> str:
+def _suggested_next_action(
+    task: dict[str, Any], *, asked: str | None = None, item: dict[str, Any] | None = None
+) -> str:
     status = task["task_status"]
     tid = task["id"]
+    if status == TaskStatus.AWAITING_EXTERNAL:
+        if item is None:
+            return f"Step {task['step']} waits for external work: `runspool items --task {tid}`."
+        return (
+            f"Step {task['step']} waits for external work item {item['id']} ({item['status']}, "
+            f"attempt {item['attempt']} of {item['max_attempts']}): `runspool items show "
+            f"{item['id']}`, then claim and submit it."
+        )
     if status == TaskStatus.AWAITING_APPROVAL:
         why = f" ({asked})" if asked else ""
         return (
@@ -212,5 +223,45 @@ def inspect_view(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any]:
         "artifacts": list_artifacts(ctx.config, task),
         "next_retry_at": task.get("next_retry_at"),
         "available_actions": available_actions(task),
-        "suggested_next_action": _suggested_next_action(task, asked=_approval_reason(ctx, task)),
+        "suggested_next_action": _suggested_next_action(
+            task, asked=_approval_reason(ctx, task), item=_waiting_item(ctx, task)
+        ),
     }
+
+
+def _waiting_item(ctx: AppContext, task: dict[str, Any]) -> dict[str, Any] | None:
+    items = getattr(ctx, "items", None)
+    if task["task_status"] != TaskStatus.AWAITING_EXTERNAL or items is None:
+        return None
+    return items.active_for(task["id"])
+
+
+# Work item fields in listings, in a stable order; ``item_view(full=True)`` adds
+# what the item asks for and what was submitted. The claim token is never shown.
+_ITEM_FIELDS = (
+    "id",
+    "task_id",
+    "step",
+    "status",
+    "kind",
+    "attempt",
+    "max_attempts",
+    "previous_error",
+    "error",
+    "claimed_by",
+    "claimed_at",
+    "submitted_by",
+    "submitted_at",
+    "created_at",
+    "updated_at",
+)
+
+
+def item_view(item: dict[str, Any], *, full: bool = False) -> dict[str, Any]:
+    view = {k: item.get(k) for k in _ITEM_FIELDS}
+    if full:
+        view["instructions"] = item.get("instructions")
+        view["payload"] = item.get("payload")
+        view["submission"] = item.get("submission")
+        view["step_run_id"] = item.get("step_run_id")
+    return view

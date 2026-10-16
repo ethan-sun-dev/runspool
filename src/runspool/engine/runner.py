@@ -3,6 +3,7 @@ resulting state transition."""
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
@@ -13,6 +14,7 @@ from typing import Any
 
 from runspool.clock import utcnow_text
 from runspool.engine.artifacts import contract_of, prepare_artifacts
+from runspool.engine.external import Submission, SubmissionRejected, is_external
 from runspool.engine.gate import Allow, Ask, Decision, Defer, Deny, GateRequest
 from runspool.engine.registry import StepRegistry
 from runspool.engine.step import StepContext, StepDeferred
@@ -20,10 +22,12 @@ from runspool.models import TaskStatus
 from runspool.persistence.event_log import EventLog
 from runspool.persistence.repository import TaskRepository
 from runspool.persistence.state_machine import (
+    AwaitsExternal,
     Deferred,
     Denied,
     Failed,
     NeedsApproval,
+    Rejected,
     StateMachine,
     Succeeded,
 )
@@ -55,6 +59,7 @@ class TaskRunner:
         gate: Callable[[GateRequest], Decision] | None = None,
         on_approval_asked: Callable[[dict[str, Any]], None] | None = None,
         artifacts: Any = None,
+        items: Any = None,
     ) -> None:
         self.repo = repo
         self.log = log
@@ -70,6 +75,9 @@ class TaskRunner:
         # Where StepResult.artifacts are recorded (an ArtifactLog). A store without
         # one cannot record them: a step that returns artifacts then fails.
         self._artifacts = artifacts
+        # The work items of external steps (a WorkItems). A store without them
+        # cannot run external steps: such a step then fails.
+        self._items = items
         # Refresh the heartbeat on a timer while a step runs, independent of
         # whether the step cooperatively calls ctx.heartbeat(). Default to a
         # third of the reclaim timeout so a healthy long step is never reclaimed.
@@ -104,6 +112,7 @@ class TaskRunner:
             self.log,
             workflow=self.config.workflow(task["workflow"]),
             step_runs=self.step_runs,
+            items=self._items,
         )
         if task["terminate_requested"] or task["pause_requested"]:
             # Requested while the job waited in the pool: honour it before starting
@@ -116,6 +125,19 @@ class TaskRunner:
         attempt = self.step_runs.count_runs(task_id, task["step"]) + 1
         if not self._admit(sm, task, step, attempt, claim_token):
             return
+        item = None
+        call = step.run
+        if is_external(step):
+            # Open (or wait again on) the work item, unless one has been submitted:
+            # then this run validates the submission.
+            found = self._external(sm, task, step, claim_token)
+            if found is None:
+                return
+            item, submission = found
+            attempt = item["attempt"]
+
+            def call(ctx: StepContext, _submission: Submission = submission) -> Any:
+                return step.validate(ctx, _submission)
 
         # Heartbeat / progress: throttled centrally. No progress string refreshes
         # the heartbeat only; a string also persists ``progress``.
@@ -157,7 +179,7 @@ class TaskRunner:
             )
             beat.start()
             try:
-                result = step.run(ctx)
+                result = call(ctx)
             finally:
                 stop_beat.set()
                 beat.join()
@@ -165,6 +187,29 @@ class TaskRunner:
                 self._record_artifacts(task, step, run_id, result.artifacts)
             if result.updates:
                 self.repo.update_fields(task_id, result.updates, token=claim_token)
+        except SubmissionRejected as rejected:
+            if item is None:  # not a validator: an ordinary failure
+                self._fail(sm, task, run_id, t0, claim_token, f"SubmissionRejected: {rejected}")
+                return
+            self.step_runs.finish(
+                run_id, status="rejected", duration_ms=_ms_since(t0), error=rejected.reason
+            )
+            outcome = Rejected(
+                rejected.reason,
+                item["id"],
+                item["attempt"],
+                item["max_attempts"],
+                step_run_id=run_id,
+            )
+            after = sm.finish_step(task_id, outcome, token=claim_token)
+            status = after["task_status"] if after else None
+            self._notify(
+                after or task,
+                f"step {task['step']}: submission of item {item['id']} rejected (attempt "
+                f"{item['attempt']} of {item['max_attempts']})"
+                + ("; needs attention" if status == TaskStatus.MANUAL_REQUIRED else ""),
+            )
+            return
         except StepDeferred as deferred:
             self.step_runs.finish(
                 run_id, status="deferred", duration_ms=_ms_since(t0), note=deferred.reason
@@ -176,20 +221,7 @@ class TaskRunner:
                 self._notify(after, f"terminated after step {task['step']}")
             return
         except Exception as exc:  # noqa: BLE001 - any step failure becomes task failure
-            message = f"{type(exc).__name__}: {exc}"
-            self.step_runs.finish(run_id, status="failed", duration_ms=_ms_since(t0), error=message)
-            after = sm.finish_step(
-                task_id,
-                Failed(message, self.config.scheduler.retry_delay_seconds),
-                token=claim_token,
-            )
-            status = after["task_status"] if after else None
-            verb = {
-                TaskStatus.FAILED: "failed",
-                TaskStatus.PAUSED: "failed, paused",
-                TaskStatus.TERMINATED: "failed, terminated",
-            }.get(status, "needs attention")
-            self._notify(after or task, f"step {task['step']} raised ({verb}): {message}")
+            self._fail(sm, task, run_id, t0, claim_token, f"{type(exc).__name__}: {exc}")
             return
         self.step_runs.finish(
             run_id,
@@ -197,8 +229,109 @@ class TaskRunner:
             duration_ms=_ms_since(t0),
             note=result.message or None,
         )
-        after = sm.finish_step(task_id, Succeeded(result.degraded), token=claim_token)
+        outcome = (
+            Succeeded(result.degraded)
+            if item is None
+            else Succeeded(result.degraded, item_id=item["id"], step_run_id=run_id)
+        )
+        after = sm.finish_step(task_id, outcome, token=claim_token)
         self._report_success(task, after, result)
+
+    def _fail(
+        self,
+        sm: StateMachine,
+        task: dict[str, Any],
+        run_id: int,
+        t0: float,
+        token: str | None,
+        message: str,
+    ) -> None:
+        self.step_runs.finish(run_id, status="failed", duration_ms=_ms_since(t0), error=message)
+        after = sm.finish_step(
+            task["id"],
+            Failed(message, self.config.scheduler.retry_delay_seconds),
+            token=token,
+        )
+        status = after["task_status"] if after else None
+        verb = {
+            TaskStatus.FAILED: "failed",
+            TaskStatus.PAUSED: "failed, paused",
+            TaskStatus.TERMINATED: "failed, terminated",
+        }.get(status, "needs attention")
+        self._notify(after or task, f"step {task['step']} raised ({verb}): {message}")
+
+    def _external(
+        self, sm: StateMachine, task: dict[str, Any], step: Any, token: str | None
+    ) -> tuple[dict[str, Any], Submission] | None:
+        """For an external step: return the submitted item to validate, or open a
+        work item (or wait again on the active one) and return ``None``."""
+        task_id, name = task["id"], task["step"]
+
+        def fail(message: str) -> None:
+            after = sm.finish_step(
+                task_id, Failed(message, self.config.scheduler.retry_delay_seconds), token=token
+            )
+            self._notify(after or task, f"step {name} could not open a work item: {message}")
+
+        if self._items is None:
+            fail("the active store has no work items (needed by external steps)")
+            return None
+        active = self._items.active_for(task_id)
+        if active is not None and active["step"] != name:
+            fail(f"work item {active['id']} of step {active['step']!r} is still active")
+            return None
+        if active is not None and active["status"] == "submitted":
+            submission = Submission(
+                item_id=active["id"],
+                attempt=active["attempt"],
+                value=active["submission"] or {},
+                submitted_by=active["submitted_by"],
+            )
+            return active, submission
+        if active is not None:  # open or claimed: keep waiting on it
+            outcome = AwaitsExternal(active["attempt"], active["max_attempts"], reuse=True)
+            sm.finish_step(task_id, outcome, token=token)
+            return None
+        max_attempts = getattr(step, "max_attempts", None)
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+            fail(f"max_attempts must be a positive integer, not {max_attempts!r}")
+            return None
+        previous = self._items.latest_for(task_id, name)
+        if previous is not None and previous["status"] == "rejected":
+            attempt, previous_error = previous["attempt"] + 1, previous["error"]
+        else:  # first time here, or starting over after manual_required / retry
+            attempt, previous_error = 1, None
+        ctx = StepContext(
+            task=task,
+            config=self.config,
+            should_stop=lambda: self._stop_requested(task_id),
+            heartbeat=lambda progress=None: None,
+            attempt=attempt,
+        )
+        try:
+            request = step.request(ctx)
+            kind, instructions = request.kind, request.instructions
+            payload = dict(request.payload)
+            json.dumps(payload)  # must be a JSON object
+            if not isinstance(kind, str) or not isinstance(instructions, str):
+                raise TypeError("kind and instructions must be strings")
+        except Exception as exc:  # noqa: BLE001 - a broken request fails the step
+            fail(f"{type(exc).__name__}: {exc}")
+            return None
+        outcome = AwaitsExternal(
+            attempt,
+            max_attempts,
+            kind=kind,
+            instructions=instructions,
+            payload=payload,
+            previous_error=previous_error,
+        )
+        after = sm.finish_step(task_id, outcome, token=token)
+        if after is not None and after["task_status"] == TaskStatus.AWAITING_EXTERNAL:
+            self._notify(
+                after, f"step {name} waits for external work (attempt {attempt} of {max_attempts})"
+            )
+        return None
 
     def _admit(
         self, sm: StateMachine, task: dict[str, Any], step: Any, attempt: int, token: str | None

@@ -39,6 +39,7 @@ from runspool.views import (
     event_feed_view,
     events_view,
     inspect_view,
+    item_view,
     list_view,
     overview_view,
 )
@@ -353,6 +354,152 @@ def artifacts(
         typer.echo(f"{a['type']}  {a['path']}  sha256:{a['sha256'][:12]}  ({a['step']})")
 
 
+items_app = typer.Typer(
+    help="Work items of external steps: list, show, claim, release, submit.",
+    no_args_is_help=False,
+)
+app.add_typer(items_app, name="items")
+
+
+@items_app.callback(invoke_without_command=True)
+def items(
+    typer_ctx: typer.Context,
+    all_items: bool = typer.Option(False, "--all", help="Include closed items."),
+    task_id: int | None = typer.Option(None, "--task", help="Only this task's items."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """List work items (default: open, claimed or submitted ones)."""
+    if typer_ctx.invoked_subcommand is not None:
+        return
+    from runspool.persistence.work_items import ACTIVE
+
+    ctx = _ctx()
+    rows = [] if ctx.items is None else ctx.items.list_items(
+        statuses=None if all_items else ACTIVE, task_id=task_id
+    )
+    view = [item_view(r) for r in rows]
+    if json_output:
+        _emit_json(view)
+        return
+    if not view:
+        typer.echo("no work items" if all_items else "no open work items")
+    for i in view:
+        who = f"  by {i['claimed_by']}" if i["claimed_by"] and i["status"] == "claimed" else ""
+        typer.echo(
+            f"#{i['id']}  task {i['task_id']}  {i['step']}  {i['status']}  {i['kind']}  "
+            f"attempt {i['attempt']}/{i['max_attempts']}{who}"
+        )
+
+
+def _item_guard(action):
+    """Run a work-item action; a missing item or one in the wrong state is a clean
+    error and a non-zero exit code."""
+    try:
+        return action()
+    except KeyError as exc:
+        typer.echo(f"not found: {exc.args[0] if exc.args else exc}")
+        raise typer.Exit(1) from exc
+    except (ValueError, IllegalTransition) as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(1) from exc
+
+
+@items_app.command("show")
+def items_show(
+    item_id: int = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show a work item: what it asks for, and what was submitted."""
+    item = _item_guard(lambda: commands.get_item(_ctx(), item_id))
+    view = item_view(item, full=True)
+    if json_output:
+        _emit_json(view)
+        return
+    typer.echo(f"Work item #{view['id']} (task {view['task_id']}, step {view['step']})")
+    typer.echo(f"  Status:       {view['status']}")
+    typer.echo(f"  Kind:         {view['kind']}")
+    typer.echo(f"  Attempt:      {view['attempt']} of {view['max_attempts']}")
+    if view["previous_error"]:
+        typer.echo(f"  Last attempt: {view['previous_error']}")
+    if view["error"]:
+        typer.echo(f"  Rejected:     {view['error']}")
+    if view["instructions"]:
+        typer.echo(f"  Instructions: {view['instructions']}")
+    if view["payload"]:
+        typer.echo(f"  Payload:      {json.dumps(view['payload'], ensure_ascii=False)}")
+    if view["submission"] is not None:
+        typer.echo(f"  Submission:   {json.dumps(view['submission'], ensure_ascii=False)}")
+
+
+@items_app.command("claim")
+def items_claim(
+    item_id: int = typer.Argument(...),
+    by: str | None = typer.Option(None, "--by", help="Who claims it (default: this user)."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Claim an open work item. Prints the claim token that submit and release need."""
+    who = by or _who()
+    token = _item_guard(lambda: commands.claim_item(_ctx(), item_id, by=who))
+    if json_output:
+        _emit_json({"id": item_id, "claimed_by": who, "claim_token": token})
+        return
+    typer.echo(f"Claimed work item {item_id}; token: {token}")
+
+
+@items_app.command("release")
+def items_release(
+    item_id: int = typer.Argument(...),
+    token: str | None = typer.Option(None, "--token", help="The claim token."),
+    force: bool = typer.Option(False, "--force", help="Release anyone's claim."),
+) -> None:
+    """Give a claimed work item back, so it can be claimed again."""
+    if token is None and not force:
+        typer.echo("give the claim --token, or --force to release anyone's claim")
+        raise typer.Exit(1)
+    _item_guard(lambda: commands.release_item(_ctx(), item_id, token=None if force else token))
+    typer.echo(f"Released work item {item_id}")
+
+
+@items_app.command("submit")
+def items_submit(
+    item_id: int = typer.Argument(...),
+    token: str = typer.Option(..., "--token", help="The claim token."),
+    file: Path | None = typer.Option(None, "--file", help="Submit this file (path + sha256)."),
+    value: str | None = typer.Option(None, "--value", help="Submit this text."),
+    json_value: str | None = typer.Option(
+        None, "--json-value", help="Submit this JSON object as it is."
+    ),
+    by: str | None = typer.Option(None, "--by", help="Who submits it (default: this user)."),
+) -> None:
+    """Submit a result for a claimed work item. The step checks it when the task
+    next runs (``runspool run`` or the daemon); see ``runspool items show``."""
+    from runspool.engine.external import sha256_of
+
+    given = [x is not None for x in (file, value, json_value)]
+    if sum(given) != 1:
+        typer.echo("give exactly one of --file, --value or --json-value")
+        raise typer.Exit(1)
+    if file is not None:
+        path = file.expanduser().resolve()
+        if not path.is_file():
+            typer.echo("not found: the file to submit")
+            raise typer.Exit(1)
+        submission: Any = {"path": str(path), "sha256": sha256_of(path)}
+    elif value is not None:
+        submission = {"value": value}
+    else:
+        try:
+            submission = json.loads(json_value or "")
+        except ValueError as exc:
+            typer.echo(f"--json-value is not JSON: {exc}")
+            raise typer.Exit(1) from exc
+    who = by or _who()
+    _item_guard(
+        lambda: commands.submit_item(_ctx(), item_id, token=token, value=submission, by=who)
+    )
+    typer.echo(f"Submitted work item {item_id}; it is checked when the task next runs")
+
+
 @app.command()
 def inspect(
     task_id: int = typer.Argument(...),
@@ -638,7 +785,7 @@ def _config_path_from(argv: list[str]) -> Path:
 # Built-in commands added after plugins could already register commands of their
 # own. A plugin command of the same name predates them, so it wins: the built-in
 # yields instead of breaking that plugin.
-_YIELDING_BUILTINS = frozenset({"artifacts"})
+_YIELDING_BUILTINS = frozenset({"artifacts", "items"})
 
 
 def build_app(config_path: Path | str) -> typer.Typer:
@@ -671,6 +818,9 @@ def build_app(config_path: Path | str) -> typer.Typer:
         if contributed.name in _YIELDING_BUILTINS:
             combined.registered_commands = [
                 c for c in combined.registered_commands if _command_name(c) != contributed.name
+            ]
+            combined.registered_groups = [
+                g for g in combined.registered_groups if g.name != contributed.name
             ]
         elif contributed.name in builtin:
             typer.echo(
@@ -716,7 +866,8 @@ def _command_name(command: Any) -> str:
 
 
 def _builtin_names() -> set[str]:
-    return {_command_name(c) for c in app.registered_commands}
+    commands_ = {_command_name(c) for c in app.registered_commands}
+    return commands_ | {g.name for g in app.registered_groups if g.name}
 
 
 def _command_in(argv: list[str]) -> str | None:

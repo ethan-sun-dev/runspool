@@ -74,6 +74,20 @@ class LazyStep(Step):
     def provides(self) -> Any:  # type: ignore[override]
         return getattr(self.resolve(), "provides", None)
 
+    @property
+    def external(self) -> bool:  # type: ignore[override]
+        return bool(getattr(self.resolve(), "external", False))
+
+    @property
+    def max_attempts(self) -> Any:
+        return getattr(self.resolve(), "max_attempts", None)
+
+    def request(self, ctx: StepContext) -> Any:
+        return self.resolve().request(ctx)  # type: ignore[attr-defined]
+
+    def validate(self, ctx: StepContext, submission: Any) -> StepResult:
+        return self.resolve().validate(ctx, submission)  # type: ignore[attr-defined]
+
     def when(self, task: dict[str, Any], config: Any) -> bool:
         return self.resolve().when(task, config)
 

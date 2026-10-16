@@ -133,5 +133,9 @@ class Coordinator:
         except KeyError:
             return None
         return StateMachine(
-            self.repo, self.log, workflow=workflow, step_runs=self.runner.step_runs
+            self.repo,
+            self.log,
+            workflow=workflow,
+            step_runs=self.runner.step_runs,
+            items=getattr(self.runner, "_items", None),
         )

@@ -26,6 +26,8 @@ class AppContext:
     log: EventLog
     step_runs: StepRunLog
     kernel: Kernel | None = None
+    # Work items of external steps (runspool.engine.external), if the store has them.
+    items: Any = None
 
     def state_machine(self, workflow_name: str) -> StateMachine:
         return StateMachine(
@@ -33,6 +35,7 @@ class AppContext:
             self.log,
             workflow=self.config.workflow(workflow_name),
             step_runs=self.step_runs,
+            items=self.items,
         )
 
     def service(self, name: str) -> Any:
@@ -55,6 +58,7 @@ def load_context(config_path: Path | str) -> AppContext:
         log=store.log,
         step_runs=store.step_runs,
         kernel=booted.kernel,
+        items=getattr(store, "items", None),
     )
 
 

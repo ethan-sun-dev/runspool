@@ -213,6 +213,7 @@ class RuntimeService:
             registry,
             self.config,
             artifacts=getattr(store, "artifacts", None),
+            items=getattr(store, "items", None),
             **runner_kwargs,
         )
         pool = WorkerPool(self.config.worker_pool.size)
@@ -244,6 +245,7 @@ class RuntimeService:
             self.store.log,
             workflow=self.config.workflow(any_workflow),
             step_runs=self.store.step_runs,
+            items=getattr(self.store, "items", None),
         ).recover_interrupted()
 
     def run_until_idle(
