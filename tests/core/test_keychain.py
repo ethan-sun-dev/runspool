@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 
@@ -206,16 +207,17 @@ def test_a_name_that_is_not_a_credential_name_is_refused_without_echo(security, 
 
 @pytest.fixture
 def stand_in(tmp_path):
-    """A ``security`` that records its arguments and standard input, then prints the
-    value stored for the account (exit 44 if there is none)."""
+    """A ``security`` that records its arguments, standard input and environment,
+    then prints the value stored for the account (exit 44 if there is none)."""
     record = tmp_path / "record.json"
     script = tmp_path / "fake-security"
     script.write_text(
         f"#!{sys.executable}\n"
-        "import json, sys\n"
+        "import json, os, sys\n"
         "argv = sys.argv[1:]\n"
         "stdin = sys.stdin.read()\n"
-        f"json.dump({{'argv': argv, 'stdin': stdin}}, open({str(record)!r}, 'w'))\n"
+        "seen = {'argv': argv, 'stdin': stdin, 'env': dict(os.environ)}\n"
+        f"json.dump(seen, open({str(record)!r}, 'w'))\n"
         "sys.stderr.write('security: some diagnostic\\n')\n"
         f"items = {{'API_TOKEN': {SECRET!r}, '中文_NONE': ''}}\n"
         "account = argv[argv.index('-a') + 1]\n"
@@ -233,13 +235,46 @@ def test_the_default_runner_reads_stdout_and_passes_no_value_or_input(stand_in, 
     kc = MacKeychain("svc", security=script, platform="darwin")
     assert kc.lookup("API_TOKEN") == SECRET
     seen = json.loads(record.read_text(encoding="utf-8"))
-    assert seen == {
-        "argv": ["find-generic-password", "-s", "svc", "-a", "API_TOKEN", "-w"],
-        "stdin": "",  # /dev/null
-    }
+    assert (seen["argv"], seen["stdin"]) == (
+        ["find-generic-password", "-s", "svc", "-a", "API_TOKEN", "-w"],
+        "",  # /dev/null
+    )
     assert kc.lookup("OTHER") is None  # exit 44
     out, err = capfd.readouterr()
     assert SECRET not in out + err and "diagnostic" not in err  # stderr is discarded
+
+
+# Fictitious values, in the process environment of the program that looks them up.
+ENV_CREDENTIALS = {
+    "API_TOKEN": "fake-env-api-token-0001",
+    "GITHUB_TOKEN": "fake-env-gh-token-0002",
+    "DEPLOY_KEY": "fake-env-deploy-key-0003",
+    "AWS_SECRET_ACCESS_KEY": "fake-env-aws-secret-0004",
+    "DB_SECRET": "fake-env-db-secret-0005",
+    "SERVICE_PASSWORD": "fake-env-password-0006",
+}
+
+
+def test_security_gets_a_fixed_minimal_environment_never_the_parent_one(
+    stand_in, tmp_path, monkeypatch
+):
+    script, record = stand_in
+    for name, value in ENV_CREDENTIALS.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    c = creds(
+        tmp_path,
+        MacKeychain("svc", security=script, platform="darwin"),
+        env=os.environ,
+        environment=False,
+    )
+    assert c.resolve("API_TOKEN") == SECRET  # the keychain's value, not the variable
+    env = json.loads(record.read_text(encoding="utf-8"))["env"]
+    # Only what the system adds by itself may appear besides the fixed PATH.
+    assert env.get("PATH") == "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert set(env) <= {"PATH", "__CF_USER_TEXT_ENCODING", "LC_CTYPE"}
+    shown = json.dumps(env)
+    assert all(name not in env and value not in shown for name, value in ENV_CREDENTIALS.items())
 
 
 def test_the_default_runner_reports_a_missing_program():
@@ -403,3 +438,106 @@ def test_by_default_nothing_changes_and_security_is_never_run(profile, monkeypat
     names = [c.name for c in ctx.service("doctor").run()]
     assert "credentials keychain" not in names and "credentials file" in names
     assert fake.calls == [] and not any("security" in str(a) for a in calls)
+
+
+# -- a failing lookup through the real command line, with tracebacks showing locals ---
+
+CLI_PLUGIN = """
+import typer
+
+
+def contribute(ctx, config):
+    def show_token():
+        value = ctx.credentials.resolve("API_TOKEN")
+        typer.echo("configured" if value else "not configured")
+
+    ctx.cli.register(show_token, name="show-token")
+
+
+contribute.inject = ["cli", "credentials"]
+"""
+
+# Starts the CLI with the keychain's ``security`` replaced by a stand-in. Older
+# Typer versions (allowed by the dependency range) show local variables in their
+# tracebacks by default; ``force-locals`` turns that on whatever the version.
+CLI_LAUNCHER = """
+import sys
+from pathlib import Path
+
+if sys.argv.pop(1) == "force-locals":
+    import typer
+
+    _init = typer.Typer.__init__
+
+    def _with_locals(self, *args, **kwargs):
+        kwargs["pretty_exceptions_show_locals"] = True
+        _init(self, *args, **kwargs)
+
+    typer.Typer.__init__ = _with_locals
+
+import runspool.core.keychain as keychain
+
+keychain.MacKeychain.__init__.__kwdefaults__["security"] = Path(sys.argv.pop(1))
+keychain.MacKeychain.problem = lambda self: None
+
+from runspool.cli import main
+
+sys.argv[0] = "runspool"
+main()
+"""
+
+
+@pytest.mark.parametrize(
+    "output, status",
+    [
+        (f"sys.stdout.buffer.write({SECRET.encode()!r} + b'\\xff\\n')", 0),  # not UTF-8
+        (f"print({SECRET!r})", 51),  # an error status, with output
+    ],
+    ids=["not-utf8", "error-status"],
+)
+@pytest.mark.parametrize("locals_", ["force-locals", "version-default"])
+def test_a_failing_lookup_never_shows_the_output_in_a_traceback(tmp_path, output, status, locals_):
+    script = tmp_path / "fake-security"
+    script.write_text(
+        f"#!{sys.executable}\nimport sys\n{output}\nsys.exit({status})\n", encoding="utf-8"
+    )
+    script.chmod(0o755)
+    (tmp_path / "token_cli.py").write_text(CLI_PLUGIN, encoding="utf-8")
+    profile = tmp_path / "config.yaml"
+    patch = [
+        {"insert": [{"id": "token-cli", "plugin": "token_cli:contribute"}]},
+        {"id": "credentials", "config": {"keychain": {"service": "svc"}, "environment": False}},
+    ]
+    profile.write_text(
+        f"workspace_root: {json.dumps(str(tmp_path / 'ws'))}\npatch: {json.dumps(patch)}\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(tmp_path), *sys.path]),
+        "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+        "COLUMNS": "200",
+    }
+    env.pop("_TYPER_STANDARD_TRACEBACK", None)
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            CLI_LAUNCHER,
+            locals_,
+            str(script),
+            "-c",
+            str(profile),
+            "show-token",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode != 0
+    assert "KeychainError" in done.stderr  # the failing path did run
+    assert SECRET not in done.stdout + done.stderr
+    assert "S3CRET" not in done.stdout + done.stderr  # nor a truncated part of it

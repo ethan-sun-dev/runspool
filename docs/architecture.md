@@ -346,7 +346,10 @@ A lookup runs `/usr/bin/security find-generic-password -s <service> -a <NAME> -w
 by absolute path. Only the service and the name are arguments; the value comes
 back on the child's standard output through a pipe that only RunSpool reads
 (standard input is `/dev/null`, standard error is discarded). Process arguments
-are visible to other local users (`ps`), so no value is ever passed as one.
+are visible to other local users (`ps`), so no value is ever passed as one. The
+child does not inherit RunSpool's environment, which may hold credentials: it
+gets only `PATH=/usr/bin:/bin:/usr/sbin:/sbin` (`security` finds the user's
+keychains without `HOME`).
 
 - An item that exists: its value (one trailing newline removed). An empty value
   counts as absent.
@@ -355,8 +358,11 @@ are visible to other local users (`ps`), so no value is ever passed as one.
   denied, a timeout, output that is not UTF-8 — raises `KeychainError`
   (from `runspool.core.keychain`) and no later source is asked. Its message
   holds the name and an exit status at most, never the output or `security`'s
-  own messages, and it chains no other exception. A step that resolves a
-  credential then fails with that message, and `check()` reports it.
+  own messages, and it chains no other exception. The output is dropped before
+  the error is raised, so no frame of its traceback holds it in a local
+  variable (older Typer versions, 0.16 among them, print locals by default).
+  A step that resolves a credential then fails with that message, and
+  `check()` reports it.
 
 `environment: false` works with or without the keychain. When the keychain is
 configured, `doctor` adds a `credentials keychain` check: whether

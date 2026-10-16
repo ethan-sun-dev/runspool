@@ -11,8 +11,10 @@ a command line or in shell history.)
 A lookup runs ``security find-generic-password -s <service> -a <NAME> -w``. Only
 the service and the name are arguments; the value comes back on the child's
 standard output, through a pipe only this process reads. Standard input is
-``/dev/null`` and standard error is discarded. ``security`` is always run by its
-absolute path, never looked up on ``PATH``.
+``/dev/null``, standard error is discarded, and the child gets a fixed minimal
+environment (:data:`SECURITY_ENV`), never this process's own, which may hold
+credentials. ``security`` is always run by its absolute path, never looked up on
+``PATH``.
 
 What happens:
 
@@ -21,7 +23,9 @@ What happens:
 * anything else (not macOS, no ``security``, a locked keychain, access denied, a
   timeout, output that is not UTF-8): :class:`KeychainError`, never a silent
   fallback. Its message holds the name and an exit status at most: never the
-  output, never ``security``'s own messages.
+  output, never ``security``'s own messages, and the output is gone before it is
+  raised: no frame of its traceback holds it in a local variable (some Typer
+  versions print those).
 """
 
 from __future__ import annotations
@@ -37,6 +41,9 @@ SECURITY = Path("/usr/bin/security")
 ITEM_NOT_FOUND = 44  # errSecItemNotFound, as ``security`` reports it
 DEFAULT_SERVICE = "runspool"
 DEFAULT_TIMEOUT = 15.0
+# All the child gets: none of this process's variables (credentials among them).
+# ``security`` finds the user's keychains without HOME.
+SECURITY_ENV = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
 
 _NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")  # CREDENTIAL_NAME_PATTERN
 
@@ -55,6 +62,7 @@ def run_security(argv: Sequence[str], timeout: float) -> tuple[int, bytes]:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        env=dict(SECURITY_ENV),
         timeout=timeout,
         check=False,
     )
@@ -95,30 +103,33 @@ class MacKeychain:
         if not _NAME.fullmatch(name):  # never echoed: it may be a value passed by mistake
             raise KeychainError("not a valid credential name; the keychain was not asked")
         argv = [str(self.security), "find-generic-password", "-s", self.service, "-a", name, "-w"]
-        # The error is raised outside the except blocks, so it carries no context
-        # (a TimeoutExpired holds whatever the child had written so far).
-        failure = None
+        value, failure = self._ask(name, argv)
+        if failure is not None:
+            raise KeychainError(failure)
+        return value
+
+    def _ask(self, name: str, argv: list[str]) -> tuple[str | None, str | None]:
+        """``(value, None)``, ``(None, None)`` for no such item, or ``(None, why)``.
+
+        Never raises for what ``security`` does: the caller raises once this frame,
+        and with it the raw output, is gone, so a traceback that shows local
+        variables cannot show the output. Nothing is raised inside an except
+        block either (a TimeoutExpired holds whatever the child had written)."""
         try:
             status, out = self._runner(argv, self.timeout)
         except subprocess.TimeoutExpired:
-            failure = f"keychain lookup of {name} timed out after {self.timeout:g}s"
+            return None, f"keychain lookup of {name} timed out after {self.timeout:g}s"
         except OSError as exc:
-            failure = (
-                f"keychain lookup of {name} could not run {self.security} ({type(exc).__name__})"
-            )
-        if failure is not None:
-            raise KeychainError(failure)
+            kind = type(exc).__name__
+            return None, f"keychain lookup of {name} could not run {self.security} ({kind})"
         if status == ITEM_NOT_FOUND:
-            return None
+            return None, None
         if status != 0:
-            raise KeychainError(f"keychain lookup of {name} failed (security exit status {status})")
-        value = None
+            return None, f"keychain lookup of {name} failed (security exit status {status})"
         try:
             value = out.decode("utf-8")
         except UnicodeDecodeError:
-            pass
-        if value is None:
-            raise KeychainError(f"keychain item {name} is not UTF-8 text")
+            return None, f"keychain item {name} is not UTF-8 text"
         if value.endswith("\n"):
             value = value[:-1]
-        return value or None
+        return value or None, None
