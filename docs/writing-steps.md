@@ -230,6 +230,57 @@ Rows are never updated: a step that runs again records again. Read them with
 `degraded` (it failed after recording, the process died) are left out unless you
 pass `include_unfinished=True`.
 
+## Spawning child tasks
+
+Optional. A step can fan its task out: return the child tasks to create in
+`StepResult.spawn`.
+
+```python
+from runspool.engine.children import ChildTask
+
+
+class Fanout(Step):
+    name = "fanout"
+
+    def run(self, ctx: StepContext) -> StepResult:
+        return StepResult(
+            message="one unit per target",
+            spawn=[
+                ChildTask(ctx.task["input"], "unit", name=target,
+                          metadata={"target": target}, key=target)
+                for target in ("blog", "newsletter")
+            ],
+        )
+```
+
+**Created with the step.** When the step succeeds (also when it is `degraded`),
+the children are created in the same database transaction that advances the
+parent. A crash leaves either both (the parent moved on and its children exist)
+or neither (the step runs again and spawns them then), so a re-run after a crash
+never creates duplicates, and a stale worker whose claim was taken back spawns
+nothing. Nothing is spawned when the step fails or defers, or when a terminate
+request ends the task at that boundary; a pause at the boundary does not stop it.
+
+**Independent tasks.** Each child is a task of its own, queued on the first step
+of its workflow, with `parent_task_id` set to the parent and the configured
+`max_retries`. The parent does not wait for its children: it goes on to its next
+step, or finishes. If something should happen once the children are done, give
+the children a step for it (or poll `store.repo.list_children(parent_id)`).
+
+**Keys.** `key` names a child within its parent. If the spawning step runs again
+(after `runspool set-step` back to it), a child whose key the parent already
+spawned is not created again; children without a key are created every time the
+step succeeds. Each spawn is recorded (which step run of the parent spawned which
+child, and its key), and the parent gets a `children_spawned` event listing the
+ids created and those already spawned.
+
+**Validation.** The spawn is checked before anything of the result is written:
+every entry must be a `ChildTask` with a non-empty `input`, a defined `workflow`,
+a string `name`, a JSON-object `metadata` and a non-empty `key` used once. A spawn
+that does not validate fails the step (the error names the child by position,
+never its input) and nothing is created. An external step's validator may return
+a spawn too: the children are created when the submission is accepted.
+
 ## External steps
 
 Optional. Some steps are done outside the engine: an AI agent writes a draft, a
