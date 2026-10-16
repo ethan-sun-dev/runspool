@@ -308,9 +308,11 @@ in the same transaction; a waiting task cannot be paused.
   --force`. Expiring claims automatically would need lease renewal and a way to
   fence off the old claimant; without that, releasing on a timeout could have the
   same external work done twice.
-- *Validation is not immediate.* A submission is checked when the task next runs:
-  on the next `runspool run`, or the daemon's next round (at most about one poll
-  interval later).
+- *Validation is not immediate.* A submitted task is queued again, and its
+  submission is checked the next time the task can be scheduled (by `runspool
+  run` or the daemon). There is no upper bound on how long that takes: other
+  queued tasks, the step's concurrency quota (another validation of the same step
+  holding its slot) and approval can each delay it further.
 - *Submissions have no size limit.* The submitted JSON object is stored as it is;
   the command line and library are a local, trusted boundary. Submit large
   content as a file (`--file`, path plus sha256) rather than inline. A

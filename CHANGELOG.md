@@ -71,9 +71,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the path). A task that ends in any terminal state (for instance a last
   external step skipped by its `when`), is terminated, or moves to another step
   cancels its remaining active item. Steps that are not external are
-  unaffected. Known limits: claims do not expire, a submission is validated on
-  the next `run` / daemon round, and submissions have no size limit (see
-  writing-steps.md).
+  unaffected. Known limits: claims do not expire, a submission is validated
+  the next time its task can be scheduled (queueing, quotas and approval can
+  delay that), and submissions have no size limit (see writing-steps.md).
+  `items submit --file` reports a file it cannot read by the kind of error
+  only, never its path.
 - `runspool items [--all] [--task ID] [--json]`, `items show <id>`, `items claim
   <id>`, `items release <id>`, `items submit <id> --token T (--file PATH | --value
   TEXT | --json-value JSON)`. If a plugin registers its own `items` command, it
