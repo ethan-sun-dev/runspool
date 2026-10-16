@@ -45,8 +45,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   change at run time as before.
 - Kernel: `Kernel.guard_changes(guard)` lets an application refuse changes to
   its plugins (load, reload, unload, provide or withdraw a service) once started;
-  `Context.check_change(what)` applies the same guard to a service's own
-  registrations. Shutting the kernel down is never refused.
+  `Fiber.check_change(what)` applies the same guard to a service's own
+  registrations (on the fiber, so no name is added to `Context`, whose
+  attributes are service names); `Fiber.effect(..., change=...)` marks a
+  registration whose early dispose is checked too. Shutting the kernel down is never refused.
 - If a plugin registers its own `artifacts` command, it is used instead of the
   new built-in one.
 - `StepResult.artifacts`: a step may record what it produced as

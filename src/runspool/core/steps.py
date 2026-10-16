@@ -217,7 +217,8 @@ class _BoundSteps:
             raise TypeError(f"{instance!r} is not a runspool Step")
         registry = self._service.registry
         side_effects = self._service._side_effects
-        self._ctx.check_change(f"register step {instance.name!r}")
+        fiber = self._ctx.fiber
+        fiber.check_change(f"register step {instance.name!r}")
 
         def register() -> Callable[[], None]:
             registry.register(instance)
@@ -230,13 +231,9 @@ class _BoundSteps:
 
             return unregister
 
-        effect = self._ctx.effect(register, label=f"step:{instance.name}")
-
-        def undo() -> None:
-            self._ctx.check_change(f"unregister step {instance.name!r}")
-            effect()
-
-        return undo
+        return fiber.effect(
+            register, label=f"step:{instance.name}", change=f"unregister step {instance.name!r}"
+        )
 
 
 plugin = Plugin(name="steps", apply=lambda ctx, config: ctx.provide("steps", StepsService()))

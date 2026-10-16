@@ -78,17 +78,27 @@ class FiberState(StrEnum):
 class _Effect:
     """A registration and the disposers that undo it. Calling it disposes it, once."""
 
-    __slots__ = ("fiber", "label", "_disposers", "_done")
+    __slots__ = ("fiber", "label", "_disposers", "_done", "_change")
 
-    def __init__(self, fiber: Fiber, disposers: list[Disposer], label: str) -> None:
+    def __init__(
+        self, fiber: Fiber, disposers: list[Disposer], label: str, change: str | None = None
+    ) -> None:
         self.fiber = fiber
         self.label = label
         self._disposers = disposers
         self._done = False
+        self._change = change  # what disposing it changes, for the change guard
 
     def __call__(self) -> None:
         if self._done:
             return
+        if self._change is not None:
+            with self.fiber._kernel._change(self._change):
+                self._dispose()
+        else:
+            self._dispose()
+
+    def _dispose(self) -> None:
         self._done = True
         if self in self.fiber._effects:
             self.fiber._effects.remove(self)
@@ -170,19 +180,26 @@ class Fiber:
 
     # -- effects ------------------------------------------------------------------
 
-    def effect(self, body: Callable[[], Any], label: str = "effect") -> Disposer:
+    def effect(
+        self, body: Callable[[], Any], label: str = "effect", *, change: str | None = None
+    ) -> Disposer:
         """Run ``body`` now and remember how to undo it.
 
         ``body`` returns ``None``, a disposer, or an iterable of disposers. The
         returned callable disposes the effect early; otherwise it is disposed when
         the fiber unloads.
+
+        ``change``: the registration is a change to the loaded plugins (see
+        :meth:`Kernel.guard_changes`); ``change`` describes undoing it, and an early
+        dispose is checked with the change guard first. (Registering it is checked
+        with :meth:`check_change` by the caller.)
         """
         if not self._accepts_effects():
             raise InactiveEffectError(
                 f"plugin {self.name!r} is {self.state.value}; it cannot register {label!r}"
             )
         disposers = _disposers_of(body(), label)
-        effect = _Effect(self, disposers, label)
+        effect = _Effect(self, disposers, label, change)
         if not self._accepts_effects():
             # The body itself tore this fiber down; undo it now rather than leak it.
             effect()
@@ -196,6 +213,13 @@ class Fiber:
         if self._disposed or self._phase is FiberState.UNLOADING:
             return False
         return self._phase is FiberState.LOADING or self._loaded_epoch is not None
+
+    def check_change(self, what: str) -> None:
+        """Raise :class:`PluginChangeRefused` if the kernel's change guard refuses
+        ``what`` (see :meth:`Kernel.guard_changes`). For services whose registrations
+        must not change once the application has started. (On the fiber, not the
+        context: a context's attributes are service names.)"""
+        self._kernel._check_change(what)
 
     # -- lifecycle ----------------------------------------------------------------
 
@@ -406,12 +430,6 @@ class Context:
     def effect(self, body: Callable[[], Any], label: str = "effect") -> Disposer:
         return self.fiber.effect(body, label)
 
-    def check_change(self, what: str) -> None:
-        """Raise :class:`PluginChangeRefused` if the kernel's change guard refuses
-        ``what`` (see :meth:`Kernel.guard_changes`). For services whose registrations
-        must not change once the application has started."""
-        self._kernel._check_change(what)
-
     def on(self, event: str, callback: Callable[..., Any], *, prepend: bool = False) -> Disposer:
         return self._kernel.events.on(self.fiber, event, callback, prepend=prepend)
 
@@ -464,7 +482,7 @@ class Kernel:
         ``None`` to allow it. A refused change raises :class:`PluginChangeRefused`
         before anything is changed. A guard that raises refuses the change. Applies
         to loading, reloading and unloading plugins and to providing or withdrawing
-        services (and to anything a service checks with :meth:`Context.check_change`);
+        services (and to anything a service checks with :meth:`Fiber.check_change`);
         not to :meth:`dispose`. Replaces an earlier guard."""
         self._change_guard = guard
 
@@ -529,15 +547,12 @@ class Kernel:
             return unregister
 
         with self._change(f"provide service {name!r}"):
-            effect = fiber.effect(register, label=f"provide:{name}")
+            undo = fiber.effect(
+                register, label=f"provide:{name}", change=f"withdraw service {name!r}"
+            )
             # Notify only once the registration is recorded, so a dependent that tears
             # the provider down in response also tears this service down.
             self._notify({name})
-
-        def undo() -> None:
-            with self._change(f"withdraw service {name!r}"):
-                effect()
-
         return undo
 
     def _usable(self, name: str, consumer: Fiber) -> bool:

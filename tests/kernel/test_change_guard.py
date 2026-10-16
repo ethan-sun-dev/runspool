@@ -104,3 +104,44 @@ def test_shutting_down_is_never_refused():
     assert kernel.fibers == []
     with pytest.raises(PluginChangeRefused):  # the guard applies again afterwards
         kernel.root.plugin(_provider("b", log))
+
+
+def test_a_service_named_check_change_is_still_the_service():
+    """The guard adds no public name to Context: a plugin that provides and injects
+    a service called ``check_change`` gets that service, as before the guard."""
+    kernel = Kernel()
+    service = object()
+    kernel.root.plugin(
+        Plugin(name="p", apply=lambda ctx, config: ctx.provide("check_change", service))
+    )
+    seen = []
+    kernel.root.plugin(
+        Plugin(
+            name="c",
+            apply=lambda ctx, config: seen.append(ctx.check_change),
+            inject=["check_change"],
+        )
+    )
+    assert seen == [service]
+
+
+def test_disposers_are_returned_as_before():
+    """Without a guard, provide() and steps.register() still return the effect."""
+    from runspool.core.steps import StepsService
+    from runspool.engine.step import Step, StepResult
+
+    class S(Step):
+        name = "s"
+
+        def run(self, ctx):
+            return StepResult()
+
+    kernel = Kernel()
+    fiber = kernel.root.plugin(lambda ctx, config: None)
+    undo = fiber.ctx.provide("x", object())
+    assert type(undo).__name__ == "_Effect" and undo.label == "provide:x"
+    steps = StepsService()
+    undo = steps.for_context(fiber.ctx).register(S())
+    assert type(undo).__name__ == "_Effect" and undo.label == "step:s"
+    undo()
+    assert not steps.has("s")
