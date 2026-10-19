@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- A step can opt out of automatic retries with `retry = False` (default `True`,
+  so existing steps are unchanged). If such a step raises, the task goes
+  straight to `manual_required` whatever its remaining `max_retries`, and an
+  interrupted run (worker crash, heartbeat timeout) is not requeued either; a
+  manual `runspool retry` still requeues it. An interrupted run of a step that
+  cannot be found or loaded also goes to `manual_required`. `retry` must be a
+  bool. `StepDeferred` and the pre-execute gate are unaffected, lazily loaded
+  steps forward the flag, and `runspool doctor` lists such steps
+  (`no_auto_retry`). (#25)
+
 ### Fixed
 - `add_task` no longer fails when the task input is long text: checking whether
   the input is an existing file raised `OSError` (File name too long) for text

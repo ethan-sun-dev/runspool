@@ -246,7 +246,7 @@ class RuntimeService:
             workflow=self.config.workflow(any_workflow),
             step_runs=self.store.step_runs,
             items=getattr(self.store, "items", None),
-        ).recover_interrupted()
+        ).recover_interrupted(no_retry=self.steps.registry.no_retry)
 
     def run_until_idle(
         self,

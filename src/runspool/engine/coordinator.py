@@ -125,7 +125,7 @@ class Coordinator:
             sm = self._state_machine_for(task)
             if sm is None:
                 continue
-            sm.requeue_stale(task["id"])
+            sm.requeue_stale(task["id"], no_retry=self.registry.no_retry)
 
     def _state_machine_for(self, task: dict[str, Any]) -> StateMachine | None:
         try:

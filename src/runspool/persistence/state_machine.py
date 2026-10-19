@@ -94,10 +94,12 @@ class Deferred:
 
 @dataclass(frozen=True)
 class Failed:
-    """The step raised ``error``."""
+    """The step raised ``error``. ``no_retry``: the step opted out of automatic
+    retries (``retry = False``), so the task needs a person right away."""
 
     error: str
     retry_delay_seconds: int = 0
+    no_retry: bool = False
 
 
 @dataclass(frozen=True)
@@ -544,7 +546,7 @@ class StateMachine:
             )
 
         retry_count = task["retry_count"] + 1
-        if retry_count > task["max_retries"]:
+        if retry_count > task["max_retries"] or outcome.no_retry:
             return (
                 {
                     "task_status": TaskStatus.MANUAL_REQUIRED,
@@ -601,8 +603,11 @@ class StateMachine:
     ) -> None:
         self._force(task_id, Deferred(reason, delay_seconds), terminate=False, pause=False)
 
-    def fail(self, task_id: int, error: str, *, retry_delay_seconds: int = 0) -> None:
-        self._force(task_id, Failed(error, retry_delay_seconds), terminate=False, pause=False)
+    def fail(
+        self, task_id: int, error: str, *, retry_delay_seconds: int = 0, no_retry: bool = False
+    ) -> None:
+        failed = Failed(error, retry_delay_seconds, no_retry=no_retry)
+        self._force(task_id, failed, terminate=False, pause=False)
 
     def pause_after_successful_step(self, task_id: int) -> None:
         """Pause at the boundary of a step that finished: advance first, then pause."""
@@ -674,26 +679,38 @@ class StateMachine:
             events=[Event(EventType.RETRY, step=task["step"], message="automatic retry")],
         )
 
-    def recover_interrupted(self) -> None:
-        """After a crash, nothing is executing: settle every RUNNING / PAUSE_PENDING task."""
+    def recover_interrupted(self, no_retry: Callable[[str], bool] | None = None) -> None:
+        """After a crash, nothing is executing: settle every RUNNING / PAUSE_PENDING task.
+        ``no_retry(step)``: whether a step opted out of automatic retries; such a step
+        is not requeued but needs a person (see ``_settle``)."""
         for status in _EXECUTING:
             for task in self.repo.list_by_status(status):
-                self._settle(task["id"], reason="interrupted", check_alive=False)
+                self._settle(task["id"], reason="interrupted", check_alive=False, no_retry=no_retry)
 
-    def requeue_stale(self, task_id: int) -> None:
+    def requeue_stale(self, task_id: int, no_retry: Callable[[str], bool] | None = None) -> None:
         """Settle a task whose worker stopped heartbeating (RUNNING or PAUSE_PENDING).
 
         If its heartbeat moves while we decide, the worker is alive after all and
         the task is left alone. Clearing the claim token makes the stale worker's
         eventual finish_step a no-op.
         """
-        self._settle(task_id, reason="heartbeat timeout", check_alive=True)
+        self._settle(task_id, reason="heartbeat timeout", check_alive=True, no_retry=no_retry)
 
-    def _settle(self, task_id: int, *, reason: str, check_alive: bool) -> bool:
+    def _settle(
+        self,
+        task_id: int,
+        *,
+        reason: str,
+        check_alive: bool,
+        no_retry: Callable[[str], bool] | None = None,
+    ) -> bool:
         """Release an executing task whose worker is gone. The interrupted step is
         assumed not done: a requested terminate wins; a requested pause (or a task
-        that was already pausing) pauses in place, so the step re-runs on resume;
-        otherwise the task is requeued on the same step. Re-decides on contention."""
+        that was already pausing) pauses in place, so the step re-runs on resume (a
+        person's action); otherwise the task is requeued on the same step, unless that
+        step opted out of automatic retries (``retry = False``) or cannot be found or
+        loaded: its effect may already have happened, so the task goes to
+        manual_required instead. Re-decides on contention."""
         seen_heartbeat: Any = _UNREAD
         for _ in range(_ATTEMPTS):
             task = self.repo.get_task(task_id)
@@ -715,6 +732,15 @@ class StateMachine:
             elif task["pause_requested"] or status == TaskStatus.PAUSE_PENDING:
                 fields = {"task_status": TaskStatus.PAUSED, "pause_requested": 0, **_UNLOCK}
                 event = Event(EventType.PAUSED, step=step, message=reason)
+            elif no_retry is not None and no_retry(step):
+                error = f"{reason}: step {step!r} is not requeued automatically"
+                fields = {
+                    "task_status": TaskStatus.MANUAL_REQUIRED,
+                    "last_error": error,
+                    "next_retry_at": None,
+                    **_UNLOCK,
+                }
+                event = Event(EventType.MANUAL_REQUIRED, step=step, message=error)
             else:
                 fields = {"task_status": TaskStatus.QUEUED, **_UNLOCK}
                 event = Event(EventType.RECLAIMED, step=step, message=f"{reason}, requeued")

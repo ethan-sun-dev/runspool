@@ -73,7 +73,7 @@ class Daemon:
             step_runs=self.coordinator.runner.step_runs,
             items=getattr(self.coordinator.runner, "_items", None),
         )
-        sm.recover_interrupted()
+        sm.recover_interrupted(no_retry=self.coordinator.registry.no_retry)
 
     def run_once(self) -> None:
         # Non-blocking: tick submits runnable steps to the background pool and

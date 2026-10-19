@@ -131,6 +131,38 @@ runs unapproved. The flag is read once, when the step is registered (for a step
 loaded from config, when it is first imported); changing it on the object later
 has no effect.
 
+### Opting out of automatic retries
+
+When a step raises, the task is retried while it has retries left
+(`max_retries`), and the **same step runs again**. For a step whose effect may
+already have happened when it raised (the remote call succeeded but the response
+was lost, or a bug came after the call), set `retry = False`:
+
+```python
+class CreateDraft(Step):
+    name = "create_draft"
+    retry = False
+
+    def run(self, ctx: StepContext) -> StepResult:
+        ...
+```
+
+If such a step raises, the task goes straight to `manual_required` with the
+error recorded, whatever retries it has left; it is never requeued on its own.
+The same holds when its run is interrupted: if the worker process dies, or its
+heartbeat times out and the run is reclaimed, the task goes to
+`manual_required` (`last_error` says `interrupted` or `heartbeat timeout`)
+instead of being requeued on the same step. A run interrupted while a pause was
+pending pauses in place as for any step; resuming it is a person's action.
+An interrupted run of a step that cannot be found or loaded any more also goes
+to `manual_required` rather than being requeued.
+A person can still requeue it with `runspool retry <id>`. `retry` must be
+`True` or `False`: any other value is refused when the step is registered (or,
+for a lazily loaded step, when it loads). `StepDeferred` is not
+a failure and behaves as before, and the pre-execute gate is unchanged. The
+default is `retry = True`. A lazily loaded step answers from the real step, and
+`runspool doctor` lists the steps that opted out (check `no_auto_retry`).
+
 Plugins can add their own pre-execute policies — refuse a step before anyone is
 asked, or tell the approver exactly what will leave the machine. See
 [plugins.md](plugins.md).
