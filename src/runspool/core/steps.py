@@ -67,6 +67,12 @@ class LazyStep(Step):
         return bool(getattr(self.resolve(), "side_effect", False))
 
     @property
+    def retry(self) -> bool:  # type: ignore[override]
+        # Must come from the real step: a lazy proxy answering True would let a step
+        # that opted out of automatic retries be run again after it raised.
+        return getattr(self.resolve(), "retry", True) is not False
+
+    @property
     def requires(self) -> Any:  # type: ignore[override]
         return getattr(self.resolve(), "requires", None)
 

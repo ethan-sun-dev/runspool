@@ -90,6 +90,12 @@ class Step(ABC):
     # True for a step done outside the engine (an agent, a person): subclass
     # runspool.engine.external.ExternalStep instead of setting this yourself.
     external: bool = False
+    # False for a step that must never be run again automatically after it raised,
+    # typically one with external side effects (the effect may already have
+    # happened). Such a failure sends the task straight to manual_required whatever
+    # its remaining retries; a person can still requeue it with `runspool retry`.
+    # StepDeferred is not a failure and is unaffected.
+    retry: bool = True
 
     def when(self, task: dict[str, Any], config: Any) -> bool:
         return True

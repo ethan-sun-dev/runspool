@@ -109,6 +109,9 @@ class DoctorService:
         contracts = self._contracts_check()
         if contracts is not None:
             checks.append(contracts)
+        no_retry = self._no_retry_check()
+        if no_retry is not None:
+            checks.append(no_retry)
         refused = list(getattr(self._startup, "refused_changes", []))
         if refused:
             checks.append(
@@ -139,6 +142,21 @@ class DoctorService:
         if report.unverified:
             return Check("artifacts", True, "unverified: " + "; ".join(report.unverified))
         return Check("artifacts", True, "every declared requirement is provided")
+
+    def _no_retry_check(self) -> Check | None:
+        """Steps that opted out of automatic retries (``retry = False``), so a review
+        can see which steps have side effects worth a human check. Informational;
+        only shown once a step declares it."""
+        names = []
+        for name in self._steps.names():
+            try:
+                if getattr(self._steps.registry.get(name), "retry", True) is False:
+                    names.append(name)
+            except Exception:  # noqa: BLE001 - a step that cannot load is reported above
+                continue
+        if not names:
+            return None
+        return Check("no_auto_retry", True, "never retried automatically: " + ", ".join(names))
 
     def _external_check(self) -> Check:
         """Programs active plugins declare they need (``external``, kind ``binary``)

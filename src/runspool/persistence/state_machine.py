@@ -94,10 +94,12 @@ class Deferred:
 
 @dataclass(frozen=True)
 class Failed:
-    """The step raised ``error``."""
+    """The step raised ``error``. ``no_retry``: the step opted out of automatic
+    retries (``retry = False``), so the task needs a person right away."""
 
     error: str
     retry_delay_seconds: int = 0
+    no_retry: bool = False
 
 
 @dataclass(frozen=True)
@@ -544,7 +546,7 @@ class StateMachine:
             )
 
         retry_count = task["retry_count"] + 1
-        if retry_count > task["max_retries"]:
+        if retry_count > task["max_retries"] or outcome.no_retry:
             return (
                 {
                     "task_status": TaskStatus.MANUAL_REQUIRED,

@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- A step can opt out of automatic retries with `retry = False` (default
+  `True`, so existing steps are unchanged). If such a step raises, the task goes
+  straight to `manual_required` whatever its remaining `max_retries`; a manual
+  `runspool retry` still requeues it. `StepDeferred` and the pre-execute gate
+  are unaffected, lazily loaded steps forward the flag, and `runspool doctor`
+  lists such steps (`no_auto_retry`). (#25)
+
 ## [0.3.0] - 2026-10-16
 
 <!-- Release date: set when 0.3.0 is published. -->

@@ -207,7 +207,10 @@ class TaskRunner:
                 self.repo.update_fields(task_id, result.updates, token=claim_token)
         except SubmissionRejected as rejected:
             if item is None:  # not a validator: an ordinary failure
-                self._fail(sm, task, run_id, t0, claim_token, f"SubmissionRejected: {rejected}")
+                self._fail(
+                    sm, task, run_id, t0, claim_token, f"SubmissionRejected: {rejected}",
+                    no_retry=_no_retry(step),
+                )
                 return
             self.step_runs.finish(
                 run_id, status="rejected", duration_ms=_ms_since(t0), error=rejected.reason
@@ -239,7 +242,10 @@ class TaskRunner:
                 self._notify(after, f"terminated after step {task['step']}")
             return
         except Exception as exc:  # noqa: BLE001 - any step failure becomes task failure
-            self._fail(sm, task, run_id, t0, claim_token, f"{type(exc).__name__}: {exc}")
+            self._fail(
+                sm, task, run_id, t0, claim_token, f"{type(exc).__name__}: {exc}",
+                no_retry=_no_retry(step),
+            )
             return
         run_status = "degraded" if result.degraded else "ok"
         if spawn is None:
@@ -275,6 +281,7 @@ class TaskRunner:
                     t0,
                     claim_token,
                     f"cannot create the child tasks: {type(exc).__name__}",
+                    no_retry=_no_retry(step),
                 )
                 return
         else:
@@ -295,11 +302,13 @@ class TaskRunner:
         t0: float,
         token: str | None,
         message: str,
+        *,
+        no_retry: bool = False,
     ) -> None:
         self.step_runs.finish(run_id, status="failed", duration_ms=_ms_since(t0), error=message)
         after = sm.finish_step(
             task["id"],
-            Failed(message, self.config.scheduler.retry_delay_seconds),
+            Failed(message, self.config.scheduler.retry_delay_seconds, no_retry=no_retry),
             token=token,
         )
         status = after["task_status"] if after else None
@@ -475,3 +484,11 @@ class TaskRunner:
 
 def _ms_since(t0: float) -> int:
     return int((time.monotonic() - t0) * 1000)
+
+
+def _no_retry(step: Any) -> bool:
+    """Whether the step opted out of automatic retries (``retry = False``)."""
+    try:
+        return getattr(step, "retry", True) is False
+    except Exception:  # noqa: BLE001 - a step that cannot even load is not retried less
+        return False
