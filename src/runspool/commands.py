@@ -19,6 +19,16 @@ class DuplicateTaskError(Exception):
         self.existing_id = existing_id
 
 
+def _existing_path(input: str) -> bool:
+    """Whether the input names an existing file or directory. An input that cannot
+    be a path (plain text longer than the path limit, an embedded NUL) is not one:
+    checking it raises OSError or ValueError, which means "keep it as it is"."""
+    try:
+        return Path(input).expanduser().exists()
+    except (OSError, ValueError):
+        return False
+
+
 def add_task(
     ctx: AppContext,
     input: str,
@@ -30,11 +40,10 @@ def add_task(
     parent_task_id: int | None = None,
 ) -> int:
     wf = ctx.config.workflow(workflow)  # unknown workflow raises KeyError
-    candidate = Path(input).expanduser()
-    if candidate.exists():
+    if _existing_path(input):
         # Store an existing file or directory absolutely, so steps find it whichever
         # directory the daemon or a later `run` starts in.
-        input = str(candidate.resolve())
+        input = str(Path(input).expanduser().resolve())
     if parent_task_id is not None and ctx.repo.get_task(parent_task_id) is None:
         raise KeyError(parent_task_id)
     if not force:

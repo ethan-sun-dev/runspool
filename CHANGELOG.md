@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `add_task` no longer fails when the task input is long text: checking whether
+  the input is an existing file raised `OSError` (File name too long) for text
+  longer than the platform's path limit, so the task was never created. An input
+  that cannot be a path is now kept as it is. (#26)
+
 ## [0.3.0] - 2026-10-16
 
 <!-- Release date: set when 0.3.0 is published. -->
