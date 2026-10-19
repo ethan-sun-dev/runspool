@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +23,16 @@ class DuplicateTaskError(Exception):
 def _existing_path(input: str) -> bool:
     """Whether the input names an existing file or directory. An input that cannot
     be a path (plain text longer than the path limit, an embedded NUL) is not one:
-    checking it raises OSError or ValueError, which means "keep it as it is"."""
+    checking it raises ENAMETOOLONG or ValueError, which means "keep it as it is".
+    Any other error (a permission problem on a real path) is raised as before."""
     try:
         return Path(input).expanduser().exists()
-    except (OSError, ValueError):
+    except ValueError:
         return False
+    except OSError as e:
+        if e.errno == errno.ENAMETOOLONG:
+            return False
+        raise
 
 
 def add_task(
