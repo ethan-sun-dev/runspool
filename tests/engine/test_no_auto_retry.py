@@ -260,7 +260,7 @@ def test_a_crash_inside_an_ordinary_step_is_still_requeued(crashing):
     assert runs("crash_retries") == 2
 
 
-def _stale_running(tmp_path, step):
+def _stale_running(tmp_path, step, *, registered=True):
     from runspool.engine.coordinator import Coordinator
     from runspool.engine.registry import StepRegistry
     from runspool.engine.runner import TaskRunner
@@ -270,7 +270,8 @@ def _stale_running(tmp_path, step):
 
     ctx = load_context(write_config(tmp_path, steps=(step.name,)))
     reg = StepRegistry()
-    reg.register(step)
+    if registered:
+        reg.register(step)
     runner = TaskRunner(ctx.repo, ctx.log, ctx.step_runs, reg, ctx.config, notifier=lambda m: None)
     coord = Coordinator(ctx.repo, ctx.log, reg, runner, WorkerPool(1), ctx.config)
     tid = ctx.repo.create_task(input="x", workflow="local_file", first_step=step.name,
@@ -356,3 +357,95 @@ def test_the_state_machine_fail_api_takes_the_flag(make):
     sm.claim(tid, worker="w1")
     sm.fail(tid, "boom", no_retry=True)
     assert ctx.repo.get_task(tid)["task_status"] == TaskStatus.MANUAL_REQUIRED
+
+
+# -- Second review (P3): daemon start-up recovery, the external-step failure path, and
+# steps the registry cannot answer for -------------------------------------------------
+
+
+def test_daemon_start_up_recovery_does_not_requeue_a_no_retry_step(crashing):
+    from runspool.runtime import build_daemon
+
+    make, runs = crashing
+    ctx, tid = make("crash_no_retry")
+    build_daemon(ctx).recover()  # what the daemon does first when it starts
+    task = ctx.repo.get_task(tid)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert "interrupted" in task["last_error"]
+    assert runs("crash_no_retry") == 1
+
+
+def test_daemon_start_up_recovery_still_requeues_an_ordinary_step(crashing):
+    from runspool.runtime import build_daemon
+
+    make, _runs_of = crashing
+    ctx, tid = make("crash_retries")
+    build_daemon(ctx).recover()
+    assert ctx.repo.get_task(tid)["task_status"] == TaskStatus.QUEUED  # as on main
+
+
+def _external_without_work_items(tmp_path, retry):
+    from runspool.engine.external import ExternalStep
+    from runspool.engine.registry import StepRegistry
+    from runspool.engine.runner import TaskRunner
+
+    class Ask(ExternalStep):
+        name = "ask"
+
+        def validate(self, ctx, submission):
+            return StepResult()
+
+    Ask.retry = retry
+    cfg = tmp_path / "runspool.yaml"
+    cfg.write_text(
+        f"workspace_root: {tmp_path / 'ws'}\nscheduler:\n  max_retries: 3\n"
+        "workflows:\n  w:\n    steps: [ask]\n",
+        encoding="utf-8",
+    )
+    ctx = load_context(cfg)
+    reg = StepRegistry()
+    reg.register(Ask())
+    tid = ctx.repo.create_task(input="x", workflow="w", first_step="ask", max_retries=3)
+    ctx.state_machine("w").claim(tid, worker="t")
+    runner = TaskRunner(ctx.repo, ctx.log, ctx.step_runs, reg, ctx.config, notifier=lambda m: None)
+    runner.execute(tid)
+    return ctx.repo.get_task(tid)
+
+
+def test_an_external_no_retry_step_that_cannot_open_a_work_item_needs_a_person(tmp_path):
+    task = _external_without_work_items(tmp_path, retry=False)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert "has no work items" in task["last_error"]
+
+
+def test_an_ordinary_external_step_that_cannot_open_a_work_item_is_retried(tmp_path):
+    task = _external_without_work_items(tmp_path, retry=True)
+    assert task["task_status"] != TaskStatus.MANUAL_REQUIRED  # retries left: as on main
+    assert task["retry_count"] == 1
+
+
+def test_an_unknown_or_unloadable_step_is_treated_as_not_retried():
+    from runspool.core.steps import LazyStep
+    from runspool.engine.registry import StepRegistry
+
+    reg = StepRegistry()
+    assert reg.no_retry("missing") is True
+    def broken():
+        raise ImportError("the step's module cannot be imported")
+
+    reg.register(LazyStep("broken", broken))
+    assert reg.no_retry("broken") is True
+
+
+def test_a_heartbeat_timeout_on_an_unregistered_step_needs_a_person(tmp_path):
+    from runspool.engine.step import Step, StepResult
+
+    class Gone(Step):
+        name = "gone"
+
+        def run(self, ctx):
+            return StepResult()
+
+    task = _stale_running(tmp_path, Gone(), registered=False)
+    assert task["task_status"] == TaskStatus.MANUAL_REQUIRED
+    assert "heartbeat timeout" in task["last_error"]
