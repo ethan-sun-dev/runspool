@@ -45,3 +45,17 @@ def test_an_existing_file_is_still_stored_with_an_absolute_path(ctx, tmp_path, m
 def test_short_text_is_unchanged(ctx):
     tid = commands.add_task(ctx, "just a short sentence", workflow="local_file")
     assert ctx.repo.get_task(tid)["input"] == "just a short sentence"
+
+
+def test_a_file_in_an_unreadable_directory_still_raises(ctx, tmp_path):
+    # Only "this cannot be a path" is swallowed; a permission problem on a real
+    # path is reported as before rather than stored as plain text.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "note.txt").write_text("hello", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(PermissionError):
+            commands.add_task(ctx, str(locked / "note.txt"), workflow="local_file")
+    finally:
+        locked.chmod(0o700)
