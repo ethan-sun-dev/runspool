@@ -710,9 +710,9 @@ class StateMachine:
         assumed not done: a requested terminate wins; a requested pause (or a task
         that was already pausing) pauses in place, so the step re-runs on resume (a
         person's action); otherwise the task is requeued on the same step, unless that
-        step opted out of automatic retries (``retry = False``): its effect may already
-        have happened, so the task goes to manual_required instead. Re-decides on
-        contention."""
+        step opted out of automatic retries (``retry = False``) or cannot be found or
+        loaded: its effect may already have happened, so the task goes to
+        manual_required instead. Re-decides on contention."""
         seen_heartbeat: Any = _UNREAD
         for _ in range(_ATTEMPTS):
             task = self.repo.get_task(task_id)
@@ -735,7 +735,7 @@ class StateMachine:
                 fields = {"task_status": TaskStatus.PAUSED, "pause_requested": 0, **_UNLOCK}
                 event = Event(EventType.PAUSED, step=step, message=reason)
             elif no_retry is not None and no_retry(step):
-                error = f"{reason}: step {step!r} does not retry automatically"
+                error = f"{reason}: step {step!r} is not requeued automatically"
                 fields = {
                     "task_status": TaskStatus.MANUAL_REQUIRED,
                     "last_error": error,

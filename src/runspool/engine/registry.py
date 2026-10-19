@@ -20,12 +20,13 @@ class StepRegistry:
         self._steps[step.name] = step
 
     def no_retry(self, name: str) -> bool:
-        """Whether the registered step opted out of automatic retries
-        (``retry = False``). An unknown step, or one that cannot load, is not."""
+        """Whether the step must not be requeued automatically: it opted out of
+        automatic retries (``retry = False``), or it cannot be answered for (unknown,
+        or it cannot load), so a person decides rather than an unknown step rerun."""
         try:
             return getattr(self.get(name), "retry", True) is False
         except Exception:  # noqa: BLE001 - reported where the step is used
-            return False
+            return True
 
     def unregister(self, name: str) -> None:
         self._steps.pop(name, None)

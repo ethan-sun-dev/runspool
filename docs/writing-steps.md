@@ -154,6 +154,8 @@ heartbeat times out and the run is reclaimed, the task goes to
 `manual_required` (`last_error` says `interrupted` or `heartbeat timeout`)
 instead of being requeued on the same step. A run interrupted while a pause was
 pending pauses in place as for any step; resuming it is a person's action.
+An interrupted run of a step that cannot be found or loaded any more also goes
+to `manual_required` rather than being requeued.
 A person can still requeue it with `runspool retry <id>`. `retry` must be
 `True` or `False`: any other value is refused when the step is registered (or,
 for a lazily loaded step, when it loads). `StepDeferred` is not
