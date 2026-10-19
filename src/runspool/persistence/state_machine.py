@@ -685,9 +685,7 @@ class StateMachine:
         is not requeued but needs a person (see ``_settle``)."""
         for status in _EXECUTING:
             for task in self.repo.list_by_status(status):
-                self._settle(
-                    task["id"], reason="interrupted", check_alive=False, no_retry=no_retry
-                )
+                self._settle(task["id"], reason="interrupted", check_alive=False, no_retry=no_retry)
 
     def requeue_stale(self, task_id: int, no_retry: Callable[[str], bool] | None = None) -> None:
         """Settle a task whose worker stopped heartbeating (RUNNING or PAUSE_PENDING).

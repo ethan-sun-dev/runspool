@@ -388,6 +388,7 @@ def _external_without_work_items(tmp_path, retry):
     from runspool.engine.external import ExternalStep
     from runspool.engine.registry import StepRegistry
     from runspool.engine.runner import TaskRunner
+    from runspool.engine.step import StepResult
 
     class Ask(ExternalStep):
         name = "ask"
@@ -430,6 +431,7 @@ def test_an_unknown_or_unloadable_step_is_treated_as_not_retried():
 
     reg = StepRegistry()
     assert reg.no_retry("missing") is True
+
     def broken():
         raise ImportError("the step's module cannot be imported")
 
