@@ -149,7 +149,14 @@ class CreateDraft(Step):
 
 If such a step raises, the task goes straight to `manual_required` with the
 error recorded, whatever retries it has left; it is never requeued on its own.
-A person can still requeue it with `runspool retry <id>`. `StepDeferred` is not
+The same holds when its run is interrupted: if the worker process dies, or its
+heartbeat times out and the run is reclaimed, the task goes to
+`manual_required` (`last_error` says `interrupted` or `heartbeat timeout`)
+instead of being requeued on the same step. A run interrupted while a pause was
+pending pauses in place as for any step; resuming it is a person's action.
+A person can still requeue it with `runspool retry <id>`. `retry` must be
+`True` or `False`: any other value is refused when the step is registered (or,
+for a lazily loaded step, when it loads). `StepDeferred` is not
 a failure and behaves as before, and the pre-execute gate is unchanged. The
 default is `retry = True`. A lazily loaded step answers from the real step, and
 `runspool doctor` lists the steps that opted out (check `no_auto_retry`).

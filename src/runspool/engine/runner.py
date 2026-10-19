@@ -327,9 +327,10 @@ class TaskRunner:
         task_id, name = task["id"], task["step"]
 
         def fail(message: str) -> None:
-            after = sm.finish_step(
-                task_id, Failed(message, self.config.scheduler.retry_delay_seconds), token=token
+            failed = Failed(
+                message, self.config.scheduler.retry_delay_seconds, no_retry=_no_retry(step)
             )
+            after = sm.finish_step(task_id, failed, token=token)
             self._notify(after or task, f"step {name} could not open a work item: {message}")
 
         if self._items is None:

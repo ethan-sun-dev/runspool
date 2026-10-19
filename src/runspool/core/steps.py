@@ -27,7 +27,7 @@ from runspool.engine.artifacts import (
     check_workflows,
     contract_of,
 )
-from runspool.engine.registry import StepRegistry
+from runspool.engine.registry import StepRegistry, check_retry
 from runspool.engine.step import Step, StepContext, StepResult
 from runspool.kernel import Plugin
 from runspool.registry_builder import StepLoadError
@@ -35,6 +35,8 @@ from runspool.registry_builder import StepLoadError
 
 class LazyStep(Step):
     """A step known by name whose implementation is imported on first use."""
+
+    lazy = True  # the registry checks a lazy step when it loads, not when registered
 
     def __init__(self, name: str, loader: Callable[[], Step]) -> None:
         self.name = name
@@ -52,6 +54,10 @@ class LazyStep(Step):
                     raise StepLoadError(
                         f"step key {self.name!r} does not match step name {step.name!r}"
                     )
+                try:
+                    check_retry(step)
+                except TypeError as exc:
+                    raise StepLoadError(str(exc)) from None
                 self._step = step
             except Exception as exc:  # noqa: BLE001 - kept and re-raised on every use
                 self._error = exc

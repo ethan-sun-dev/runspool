@@ -15,7 +15,17 @@ class StepRegistry:
     def register(self, step: Step) -> None:
         if step.name in self._steps:
             raise ValueError(f"step already registered: {step.name!r}")
+        if not getattr(step, "lazy", False):  # a lazy step is checked when it loads
+            check_retry(step)
         self._steps[step.name] = step
+
+    def no_retry(self, name: str) -> bool:
+        """Whether the registered step opted out of automatic retries
+        (``retry = False``). An unknown step, or one that cannot load, is not."""
+        try:
+            return getattr(self.get(name), "retry", True) is False
+        except Exception:  # noqa: BLE001 - reported where the step is used
+            return False
 
     def unregister(self, name: str) -> None:
         self._steps.pop(name, None)
@@ -30,3 +40,10 @@ class StepRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._steps)
+
+
+def check_retry(step: Step) -> None:
+    """``retry`` must be a bool: ``0`` or ``None`` would silently mean "retry"."""
+    value = getattr(step, "retry", True)
+    if not isinstance(value, bool):
+        raise TypeError(f"step {step.name!r}: retry must be True or False, not {value!r}")
